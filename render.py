@@ -23,9 +23,9 @@ W, H = 1080, 1350  # kanwa 4:5 Instagram
 # ---------- FONTY ----------
 # Produkcja: podmienić na Space Grotesk 800 / DM Sans. Piaskownica: Poppins.
 FONT_DIR_CANDIDATES = [
+    os.path.join(os.path.dirname(__file__), "fonts"),  # bundlowane fonty marki (Space Grotesk) — priorytet
     "/usr/share/fonts/truetype/google-fonts",
     "/usr/share/fonts/truetype/poppins",
-    os.path.join(os.path.dirname(__file__), "fonts"),
 ]
 
 
@@ -42,8 +42,8 @@ def _find_font(*names):
 FONT_BOLD = _find_font("SpaceGrotesk-Bold.ttf", "Poppins-Bold.ttf")
 FONT_HEAVY = _find_font("SpaceGrotesk-Bold.ttf", "Poppins-Bold.ttf")
 FONT_MED = _find_font("SpaceGrotesk-Medium.ttf", "Poppins-Medium.ttf")
-FONT_BODY = _find_font("DMSans-Regular.ttf", "Poppins-Regular.ttf")
-FONT_LIGHT = _find_font("Poppins-Light.ttf", "Poppins-Regular.ttf")
+FONT_BODY = _find_font("SpaceGrotesk-Regular.ttf", "DMSans-Regular.ttf", "Poppins-Regular.ttf")
+FONT_LIGHT = _find_font("SpaceGrotesk-Light.ttf", "SpaceGrotesk-Regular.ttf", "Poppins-Light.ttf")
 
 
 def _f(path, size):
