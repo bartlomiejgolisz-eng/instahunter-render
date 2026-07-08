@@ -191,6 +191,40 @@ def parse_carousel_tokens(raw: str):
     return slides, caption, temat
 
 
+def build_readable(slides):
+    """Czytelna, przyjazna klientowi wersja treści karuzeli (bez tokenów, bez em-dash).
+
+    Trafia do widocznego pola „Scenariusz / treść"; surowe tokeny idą do ukrytego
+    pola technicznego (potrzebne tylko do re-renderu).
+    """
+    lines = []
+    for s in slides:
+        t = s.get("type")
+        if t == "cover":
+            lines.append("OKŁADKA")
+            if s.get("title"):
+                lines.append(s["title"])
+            if s.get("subtitle"):
+                lines.append(s["subtitle"])
+            if s.get("tagline"):
+                lines.append(s["tagline"])
+        elif t == "cta":
+            head = s.get("heading", "")
+            lines.append("CTA" + (": " + head if head else ""))
+            if s.get("body"):
+                lines.append(s["body"])
+            if s.get("cta"):
+                lines.append("👉 " + s["cta"])
+        else:
+            num = s.get("number") or (len([l for l in lines if l.startswith("SLAJD")]) + 1)
+            head = s.get("heading", "")
+            lines.append("SLAJD " + str(num) + (": " + head if head else ""))
+            if s.get("body"):
+                lines.append(s["body"])
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
 def _hex_or(default: str, v: str):
     v = (v or "").strip()
     if not v:
@@ -234,7 +268,9 @@ async def render_tokens_endpoint(
     paths = R.render_carousel(brand, slides, out_dir, photos=photos or None)
     urls = [f"{BASE_URL}/static/{job}/{os.path.basename(p)}" for p in paths]
     title = next((s.get("title", "") for s in slides if s.get("type") == "cover"), "")
+    readable = build_readable(slides)
     return JSONResponse({
         "job_id": job, "count": len(urls), "slides": urls,
         "title": title, "temat": temat, "caption": caption,
+        "readable": readable,
     })
