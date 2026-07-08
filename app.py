@@ -33,7 +33,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 class Slide(BaseModel):
-    type: str                       # cover | content | cta
+    type: str                       # cover | content | list | stat | chart | cta
     title: Optional[str] = None
     subtitle: Optional[str] = None
     tagline: Optional[str] = None
@@ -42,6 +42,11 @@ class Slide(BaseModel):
     heading: Optional[str] = None
     body: Optional[str] = None
     cta: Optional[str] = None
+    kicker: Optional[str] = None
+    items: Optional[List[str]] = None
+    figure: Optional[str] = None
+    label: Optional[str] = None
+    bars: Optional[list] = None
 
 
 class BrandIn(BaseModel):
@@ -59,6 +64,7 @@ class RenderReq(BaseModel):
     brand: BrandIn
     slides: List[Slide]
     photo_urls: List[str] = []      # rotacja zdjęć; [0] -> okładka (Format A)
+    avatar_url: Optional[str] = None  # zdjęcie profilowe klienta -> okrągły awatar
     job_id: Optional[str] = None    # do re-renderu tej samej karty (nadpisuje)
 
 
@@ -168,8 +174,10 @@ def render_endpoint(req: RenderReq, x_api_key: str = Header(default="")):
         if img is not None:
             photos.append(img)
 
+    avatar = _download(req.avatar_url) if req.avatar_url else None
+
     slides = [s.model_dump() for s in req.slides]
-    paths = R.render_carousel(brand, slides, out_dir, photos=photos or None)
+    paths = R.render_carousel(brand, slides, out_dir, photos=photos or None, avatar=avatar)
     urls = [f"{BASE_URL}/static/{job}/{os.path.basename(p)}" for p in paths]
     return JSONResponse({"job_id": job, "count": len(urls), "slides": urls})
 
@@ -184,13 +192,43 @@ def render_endpoint(req: RenderReq, x_api_key: str = Header(default="")):
 _TOKEN_RE = re.compile(r"\[\[([A-ZĄĆĘŁŃÓŚŹŻ_]+)\]\]")
 
 
+# typy tokenów, które MOGĄ wystąpić wielokrotnie w jednym slajdzie -> lista
+_REPEAT_TOKENS = {"PUNKT", "SLUPEK"}
+# mapowanie wartości [[TYP]] (PL/EN) -> wewnętrzny typ renderu
+_TYP_MAP = {
+    "cover": "cover", "okladka": "cover", "okładka": "cover",
+    "cta": "cta",
+    "lista": "list", "list": "list",
+    "statystyka": "stat", "stat": "stat",
+    "wykres": "chart", "chart": "chart",
+    "tresc": "content", "treść": "content", "content": "content",
+}
+
+
+def _parse_bar(line):
+    """'Etykieta | 62 | tak' -> (label, value_int, highlight_bool). Odporne na braki."""
+    parts = [p.strip() for p in str(line).split("|")]
+    label = parts[0] if parts else ""
+    val = 0
+    if len(parts) > 1:
+        digits = "".join(c for c in parts[1] if c.isdigit())
+        val = int(digits) if digits else 0
+    hi = False
+    if len(parts) > 2:
+        hi = parts[2].lower() in ("tak", "true", "1", "yes", "hi", "highlight")
+    return (label, max(0, min(100, val)), hi)
+
+
 def parse_carousel_tokens(raw: str):
     """Surowy blok tokenów Claude -> (slides[dict], caption, temat).
 
-    Tokeny (z prompt-karuzele-TRESC): TEMAT, SLAJD, TYTUL, PODTYTUL, TAGLINE,
-    NAGLOWEK, TRESC, CTA, END, CAPTION (+ opcjonalne TYP, NUMER, LICZBA).
-    Typ slajdu wnioskowany: TYTUL -> cover; CTA -> cta; reszta -> content.
-    Content numerowane automatycznie 1..N, cover.count = liczba content.
+    Tokeny (z prompt-karuzele-TRESC): TEMAT, SLAJD, TYP, KICKER, TYTUL, PODTYTUL,
+    TAGLINE, LICZBA, NUMER, NAGLOWEK, TRESC, FIGURA, ETYKIETA, PUNKT (xN),
+    SLUPEK (xN), CTA, END, CAPTION.
+    Typ slajdu z [[TYP]] (mapowanie PL/EN); fallback: TYTUL->cover, CTA->cta,
+    FIGURA->stat, SLUPEK->chart, PUNKT->list, reszta->content.
+    Slajdy treściowe numerowane automatycznie 1..N (jeśli brak NUMER),
+    cover.count = LICZBA lub liczba slajdów-punktów.
     """
     matches = list(_TOKEN_RE.finditer(raw or ""))
     fields = []
@@ -223,42 +261,83 @@ def parse_carousel_tokens(raw: str):
             mode = None
         else:
             if mode == "slide" and cur is not None:
-                cur[tok] = val
+                if tok in _REPEAT_TOKENS:
+                    cur.setdefault(tok, []).append(val)
+                else:
+                    cur[tok] = val
     if cur is not None:
         raw_slides.append(cur)
 
-    n_content = sum(1 for s in raw_slides
-                    if "TYTUL" not in s and "CTA" not in s
-                    and s.get("TYP", "").lower() != "cover"
-                    and s.get("TYP", "").lower() != "cta")
+    def _typ_of(s):
+        t = _TYP_MAP.get(s.get("TYP", "").strip().lower())
+        if t:
+            return t
+        if "TYTUL" in s:
+            return "cover"
+        if "CTA" in s:
+            return "cta"
+        if "FIGURA" in s:
+            return "stat"
+        if "SLUPEK" in s:
+            return "chart"
+        if "PUNKT" in s:
+            return "list"
+        return "content"
+
+    typed = [(_typ_of(s), s) for s in raw_slides]
 
     def _int(v):
         v = (v or "").strip()
         return int(v) if v.isdigit() else None
 
     slides, num = [], 0
-    for s in raw_slides:
-        typ = s.get("TYP", "").lower()
-        if "TYTUL" in s or typ == "cover":
+    for typ, s in typed:
+        if typ == "cover":
             slides.append({
                 "type": "cover",
                 "title": s.get("TYTUL", ""),
                 "subtitle": s.get("PODTYTUL", ""),
                 "tagline": s.get("TAGLINE", ""),
-                "count": _int(s.get("LICZBA")) or n_content,
+                # badge liczby TYLKO gdy jawnie podana (inaczej myliłaby się z „N błędów")
+                "count": _int(s.get("LICZBA")),
             })
-        elif "CTA" in s or typ == "cta":
+        elif typ == "cta":
             slides.append({
                 "type": "cta",
                 "heading": s.get("NAGLOWEK", ""),
                 "body": s.get("TRESC", ""),
                 "cta": s.get("CTA", ""),
             })
-        else:
+        elif typ == "stat":
+            slides.append({
+                "type": "stat",
+                "kicker": s.get("KICKER", "") or None,
+                "figure": s.get("FIGURA", ""),
+                "label": s.get("ETYKIETA", ""),
+                "body": s.get("TRESC", ""),
+            })
+        elif typ == "chart":
+            slides.append({
+                "type": "chart",
+                "kicker": s.get("KICKER", "") or None,
+                "heading": s.get("NAGLOWEK", ""),
+                "bars": [_parse_bar(b) for b in s.get("SLUPEK", []) if str(b).strip()],
+            })
+        elif typ == "list":
+            num += 1
+            slides.append({
+                "type": "list",
+                "kicker": s.get("KICKER", "") or None,
+                "number": _int(s.get("NUMER")),
+                "heading": s.get("NAGLOWEK", ""),
+                "items": [i for i in s.get("PUNKT", []) if str(i).strip()],
+            })
+        else:  # content
             num += 1
             slides.append({
                 "type": "content",
-                "number": _int(s.get("NUMER")) or num,
+                "kicker": s.get("KICKER", "") or None,
+                "number": _int(s.get("NUMER")),
                 "heading": s.get("NAGLOWEK", ""),
                 "body": s.get("TRESC", ""),
             })
@@ -271,30 +350,61 @@ def build_readable(slides):
     Trafia do widocznego pola „Scenariusz / treść"; surowe tokeny idą do ukrytego
     pola technicznego (potrzebne tylko do re-renderu).
     """
+    def _clean(v):
+        # marker akcentu *słowo* jest tylko dla renderu -> w czytelnej wersji usuwamy gwiazdki
+        return str(v or "").replace("*", "")
+
     lines = []
+    n = 0
     for s in slides:
         t = s.get("type")
         if t == "cover":
             lines.append("OKŁADKA")
-            if s.get("title"):
-                lines.append(s["title"])
-            if s.get("subtitle"):
-                lines.append(s["subtitle"])
-            if s.get("tagline"):
-                lines.append(s["tagline"])
+            for k in ("title", "subtitle", "tagline"):
+                if s.get(k):
+                    lines.append(_clean(s[k]))
         elif t == "cta":
-            head = s.get("heading", "")
+            head = _clean(s.get("heading", ""))
             lines.append("CTA" + (": " + head if head else ""))
             if s.get("body"):
-                lines.append(s["body"])
+                lines.append(_clean(s["body"]))
             if s.get("cta"):
-                lines.append("👉 " + s["cta"])
-        else:
-            num = s.get("number") or (len([l for l in lines if l.startswith("SLAJD")]) + 1)
-            head = s.get("heading", "")
-            lines.append("SLAJD " + str(num) + (": " + head if head else ""))
+                lines.append("👉 " + _clean(s["cta"]))
+        elif t == "stat":
+            n += 1
+            kick = _clean(s.get("kicker") or "")
+            lines.append("SLAJD " + str(n) + (" (" + kick + ")" if kick else "") + " — STATYSTYKA")
+            fig = _clean(s.get("figure", ""))
+            lab = _clean(s.get("label", ""))
+            lines.append((fig + " " + lab).strip())
             if s.get("body"):
-                lines.append(s["body"])
+                lines.append(_clean(s["body"]))
+        elif t == "chart":
+            n += 1
+            kick = _clean(s.get("kicker") or "")
+            head = _clean(s.get("heading", ""))
+            lines.append("SLAJD " + str(n) + (" (" + kick + ")" if kick else "") +
+                         " — WYKRES" + (": " + head if head else ""))
+            for b in s.get("bars", []):
+                lab = b[0] if isinstance(b, (list, tuple)) and b else ""
+                val = b[1] if isinstance(b, (list, tuple)) and len(b) > 1 else ""
+                lines.append("  • " + _clean(lab) + ": " + str(val) + "%")
+        elif t == "list":
+            n += 1
+            kick = _clean(s.get("kicker") or "")
+            head = _clean(s.get("heading", ""))
+            lines.append("SLAJD " + str(n) + (" (" + kick + ")" if kick else "") +
+                         " — LISTA" + (": " + head if head else ""))
+            for it in s.get("items", []):
+                lines.append("  ✓ " + _clean(it))
+        else:  # content
+            n += 1
+            kick = _clean(s.get("kicker") or "")
+            head = _clean(s.get("heading", ""))
+            lines.append("SLAJD " + str(n) + (" (" + kick + ")" if kick else "") +
+                         (": " + head if head else ""))
+            if s.get("body"):
+                lines.append(_clean(s["body"]))
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -313,6 +423,7 @@ async def render_tokens_endpoint(
     bg: str = "", bg_alt: str = "", accent: str = "", taupe: str = "",
     white: str = "", handle: str = "", glow: bool = True, ornaments: bool = True,
     photo: List[str] = Query(default=[]),
+    avatar: str = "",
     job_id: Optional[str] = None,
 ):
     if x_api_key != API_KEY:
@@ -338,8 +449,9 @@ async def render_tokens_endpoint(
         img = _download(u)
         if img is not None:
             photos.append(img)
+    avatar_img = _download(avatar) if avatar.strip() else None
 
-    paths = R.render_carousel(brand, slides, out_dir, photos=photos or None)
+    paths = R.render_carousel(brand, slides, out_dir, photos=photos or None, avatar=avatar_img)
     urls = [f"{BASE_URL}/static/{job}/{os.path.basename(p)}" for p in paths]
     title = next((s.get("title", "") for s in slides if s.get("type") == "cover"), "")
     readable = build_readable(slides)
