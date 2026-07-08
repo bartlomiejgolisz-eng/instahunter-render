@@ -176,6 +176,41 @@ def _big_numeral(base, brand, number, x=72, y=200):
     d.text((x, y), str(number), font=_f(brand.font_heavy, 190), fill=hex2rgb(brand.accent))
 
 
+# ---------- SIATKA BEZPIECZEŃSTWA OKŁADKI (deterministyczny guard) ----------
+# Twardy próg NIEZALEŻNY od AI: zdjęcie za małe/kwadratowe/poziome nie trafia na
+# okładkę fotograficzną (upscale psuje jakość, twarz walczy z tekstem) -> render
+# spada na okładkę tekstową. Te same progi używa endpoint /eval_photo (app.py),
+# żeby werdykt AI i realny render były spójne.
+COVER_MAX_UPSCALE = 1.35      # ile najwyżej wolno powiększyć źródło do 1080x1350
+COVER_MAX_RATIO = 0.95        # w/h: <=0.95 = wystarczająco pionowe; wyżej = kwadrat/poziom
+
+
+def orientation_of(w, h):
+    if h <= 0 or w <= 0:
+        return "nieznane"
+    r = w / h
+    if r <= 0.95:
+        return "pionowe"
+    if r < 1.1:
+        return "kwadratowe"
+    return "poziome"
+
+
+def cover_photo_ok(img):
+    """Czy zdjęcie nadaje się na pełnoklatkową okładkę Format A (proporcje + rozdzielczość)."""
+    try:
+        w, h = img.size
+    except Exception:
+        return False
+    if w <= 0 or h <= 0:
+        return False
+    if (w / h) > COVER_MAX_RATIO:          # kwadrat/poziom -> odrzuć
+        return False
+    if max(W / w, H / h) > COVER_MAX_UPSCALE:  # za małe (za duży upscale) -> odrzuć
+        return False
+    return True
+
+
 # ---------- KADROWANIE ZDJĘĆ (Format A / B / C) ----------
 def _cover_crop(img, w, h):
     return ImageOps.fit(img, (w, h), method=Image.LANCZOS, centering=(0.5, 0.42))
@@ -330,7 +365,9 @@ def render_carousel(brand, slides, out_dir, photos=None):
     cover_photo = None
     if photos:
         p = photos[0]
-        cover_photo = Image.open(p) if isinstance(p, str) else p
+        cand = Image.open(p) if isinstance(p, str) else p
+        # SIATKA BEZPIECZEŃSTWA: pomiń zdjęcie, które psułoby okładkę -> render tekstowy
+        cover_photo = cand if cover_photo_ok(cand) else None
     for i, s in enumerate(slides, start=1):
         t = s.get("type")
         if t == "cover":

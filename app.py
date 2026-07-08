@@ -12,7 +12,7 @@ Deploy: Dockerfile (Fly.io / Render.com / Railway — darmowy tier wystarcza).
 Bezpieczeństwo: nagłówek X-API-Key musi zgadzać się z env RENDER_API_KEY.
 """
 from __future__ import annotations
-import os, io, uuid, time, urllib.request
+import os, io, uuid, time, urllib.request, json, base64
 from typing import List, Optional
 import re
 from fastapi import FastAPI, HTTPException, Header, Request, Query
@@ -69,6 +69,75 @@ def _download(url: str) -> Optional[Image.Image]:
             return Image.open(io.BytesIO(r.read())).convert("RGB")
     except Exception:
         return None
+
+
+def _download_bytes(url: str) -> Optional[bytes]:
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "InstaHunter/1.0"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.read()
+    except Exception:
+        return None
+
+
+# ======================================================================
+# OCENA ZDJĘĆ NA OKŁADKĘ (Format A) — deterministyczna siatka + wizja Claude
+# (cz. 72). Deterministyka odrzuca kwadrat/poziom/za-małe; wizja ocenia
+# twarz-nie-na-całą-klatkę + zapas na tekst u dołu + ostrość/jakość.
+# ======================================================================
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+VISION_MODEL = os.environ.get("VISION_MODEL", "claude-haiku-4-5-20251001")
+
+VISION_PROMPT = (
+    "Oceniasz, czy ZDJĘCIE nadaje się na OKŁADKĘ pionowej karuzeli na Instagram "
+    "(format 4:5, kadr 1080x1350). Na okładce na dole zdjęcia nakładamy tytuł i "
+    "podtytuł, więc dolna 1/3 kadru musi mieć ZAPAS (nie może tam być twarzy ani "
+    "kluczowych detali). Dobra okładka: osoba/temat czytelny, twarz NIE zajmuje "
+    "całej klatki (jest oddech wokół), zdjęcie ostre i dobrej jakości, kompozycja "
+    "pionowa. Zła okładka: twarz na całą klatkę (wielka głowa), rozmyte/ciemne/"
+    "prześwietlone, chaotyczny kadr, ważne elementy w dolnej 1/3 gdzie pójdzie tekst. "
+    "Odpowiedz WYŁĄCZNIE zwartym JSON, bez markdown: "
+    '{"suitable": true/false, "face_full_frame": true/false, '
+    '"text_room_bottom": true/false, "quality_ok": true/false, '
+    '"reason": "jedno-dwa zdania po polsku, bez em-dash"}'
+)
+
+
+def _vision_eval(img_bytes: bytes, media_type: str) -> Optional[dict]:
+    """Wywołuje Claude Vision. Zwraca dict werdyktu albo None (brak klucza/błąd)."""
+    if not ANTHROPIC_API_KEY:
+        return None
+    try:
+        b64 = base64.b64encode(img_bytes).decode("ascii")
+        payload = {
+            "model": VISION_MODEL,
+            "max_tokens": 300,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {
+                        "type": "base64", "media_type": media_type, "data": b64}},
+                    {"type": "text", "text": VISION_PROMPT},
+                ],
+            }],
+        }
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=45) as r:
+            resp = json.loads(r.read().decode("utf-8"))
+        text = "".join(b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text")
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        return json.loads(m.group(0)) if m else None
+    except Exception as e:
+        return {"_error": str(e)[:200]}
 
 
 @app.get("/health")
@@ -274,3 +343,68 @@ async def render_tokens_endpoint(
         "title": title, "temat": temat, "caption": caption,
         "readable": readable,
     })
+
+
+def _vision_bytes(raw: bytes):
+    """Przygotowuje bajty do wizji: downscale do max 1200px dłuższego boku, JPEG."""
+    try:
+        im = Image.open(io.BytesIO(raw)).convert("RGB")
+        long_side = max(im.size)
+        if long_side > 1200:
+            k = 1200 / long_side
+            im = im.resize((int(im.width * k), int(im.height * k)), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=88)
+        return buf.getvalue()
+    except Exception:
+        return raw
+
+
+@app.api_route("/eval_photo", methods=["GET", "POST"])
+def eval_photo_endpoint(url: str = Query(...), x_api_key: str = Header(default="")):
+    """Ocena jednego zdjęcia pod okładkę Format A. Zwraca werdykt do zapisania w Airtable.
+
+    Werdykt: suitable = "tak"/"nie", reason, orientation (pionowe/kwadratowe/poziome),
+    width, height, evaluated_at. Make mapuje to na pola tabeli Zdjęcia klienta.
+    """
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="bad api key")
+    raw = _download_bytes(url)
+    if raw is None:
+        raise HTTPException(status_code=422, detail="nie udało się pobrać zdjęcia")
+    try:
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=422, detail="nieprawidłowy plik obrazu")
+
+    w, h = img.size
+    orientation = R.orientation_of(w, h)
+    det_ok = R.cover_photo_ok(img)
+
+    def _out(suitable, reason):
+        return JSONResponse({
+            "suitable": suitable, "reason": reason, "orientation": orientation,
+            "width": w, "height": h, "evaluated_at": int(time.time()),
+        })
+
+    # 1) SIATKA BEZPIECZEŃSTWA (deterministyczna) — twardy próg, oszczędza tokeny
+    if not det_ok:
+        if orientation == "poziome":
+            why = f"Zdjęcie poziome ({w}x{h}). Okładka Format A wymaga pionowego."
+        elif orientation == "kwadratowe":
+            why = f"Zdjęcie kwadratowe ({w}x{h}). Kadr 4:5 wypycha twarz na środek i traci jakość."
+        else:
+            why = f"Za mała rozdzielczość ({w}x{h}) dla kadru 1080x1350 (za duży upscale)."
+        return _out("nie", "Siatka bezpieczeństwa: " + why)
+
+    # 2) WIZJA CLAUDE — twarz/zapas na tekst/jakość
+    v = _vision_eval(_vision_bytes(raw), "image/jpeg")
+    if v is None:
+        return _out("tak", f"Proporcje i rozdzielczość OK ({orientation}, {w}x{h}). "
+                           "Ocena wizualna pominięta (brak klucza wizji).")
+    if "_error" in v:
+        return _out("tak", f"Proporcje i rozdzielczość OK ({orientation}, {w}x{h}). "
+                           f"Wizja niedostępna: {v['_error']}")
+    suitable = "tak" if v.get("suitable") else "nie"
+    reason = (v.get("reason") or "").strip() or f"Ocena AI: {suitable}."
+    return _out(suitable, reason)
