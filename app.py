@@ -90,15 +90,20 @@ VISION_MODEL = os.environ.get("VISION_MODEL", "claude-haiku-4-5-20251001")
 
 VISION_PROMPT = (
     "Oceniasz, czy ZDJĘCIE nadaje się na OKŁADKĘ pionowej karuzeli na Instagram "
-    "(format 4:5, kadr 1080x1350). Na okładce na dole zdjęcia nakładamy tytuł i "
-    "podtytuł, więc dolna 1/3 kadru musi mieć ZAPAS (nie może tam być twarzy ani "
-    "kluczowych detali). Dobra okładka: osoba/temat czytelny, twarz NIE zajmuje "
-    "całej klatki (jest oddech wokół), zdjęcie ostre i dobrej jakości, kompozycja "
-    "pionowa. Zła okładka: twarz na całą klatkę (wielka głowa), rozmyte/ciemne/"
-    "prześwietlone, chaotyczny kadr, ważne elementy w dolnej 1/3 gdzie pójdzie tekst. "
+    "(format 4:5, kadr 1080x1350). WAŻNE: na dole okładki nakładamy CIEMNY GRADIENT "
+    "i dopiero na nim tytuł, więc tekst będzie czytelny niezależnie od tła w dolnej "
+    "części. NIE odrzucaj zdjęcia tylko dlatego, że w dolnej 1/3 jest ubranie, ręce, "
+    "tło czy inne detale, gradient je przykryje. "
+    "Dobra okładka: to portret osoby, twarz w górnej lub środkowej części kadru, "
+    "twarz NIE zajmuje całej klatki (jest trochę oddechu wokół), zdjęcie ostre i "
+    "dobrej jakości. Typowy portret od pasa w górę jest OK. "
+    "Zła okładka: twarz/głowa na całą klatkę (ekstremalne zbliżenie, wielka głowa), "
+    "twarz umieszczona nisko w samej dolnej 1/3 (nachodzi na tytuł), zdjęcie rozmyte, "
+    "bardzo ciemne lub prześwietlone, albo to w ogóle nie jest zdjęcie osoby "
+    "(sam przedmiot/krajobraz bez tematu). Bądź rozsądny, nie przesadnie surowy. "
     "Odpowiedz WYŁĄCZNIE zwartym JSON, bez markdown: "
     '{"suitable": true/false, "face_full_frame": true/false, '
-    '"text_room_bottom": true/false, "quality_ok": true/false, '
+    '"face_too_low": true/false, "quality_ok": true/false, '
     '"reason": "jedno-dwa zdania po polsku, bez em-dash"}'
 )
 
