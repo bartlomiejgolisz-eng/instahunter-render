@@ -462,6 +462,56 @@ async def render_tokens_endpoint(
     })
 
 
+@app.post("/render_story")
+async def render_story_endpoint(
+    request: Request,
+    x_api_key: str = Header(default=""),
+    bg: str = "", accent: str = "", taupe: str = "", white: str = "", handle: str = "",
+    photo: List[str] = Query(default=[]),
+    job_id: Optional[str] = None,
+):
+    """Render stories 1080x1920 z tekstów (surowy body, bloki [[STORY]]) + rotacja zdjęć.
+
+    Body = jeden lub więcej bloków rozdzielonych [[STORY]]; tekst story może mieć
+    marker *słowo* (akcent). Zdjęcia z query `photo` (rotacja po kolei). Zwraca URL-e PNG.
+    """
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="bad api key")
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    parts = re.split(r"\[\[STORY\]\]", raw)
+    items = []
+    for p in parts:
+        if "[[TEKST]]" not in p:
+            continue
+        mfmt = re.search(r"\[\[FORMAT\]\]\s*([A-Za-z]+)", p)
+        fmt = mfmt.group(1).lower() if mfmt else "tip"
+        mtxt = re.search(r"\[\[TEKST\]\](.*?)(?:\[\[END\]\]|$)", p, re.DOTALL)
+        text = (mtxt.group(1) if mtxt else "").strip()
+        if text:
+            items.append({"text": text, "format": fmt})
+    if not items:
+        raise HTTPException(status_code=422, detail="no stories parsed from body")
+
+    job = job_id or uuid.uuid4().hex[:12]
+    out_dir = os.path.join(STATIC_DIR, job)
+    os.makedirs(out_dir, exist_ok=True)
+
+    brand = R.Brand(
+        bg=_hex_or("#111008", bg), accent=_hex_or("#E8402A", accent),
+        taupe=_hex_or("#8A7A6A", taupe), white=_hex_or("#FFFFFF", white),
+        handle=(handle.strip() or "@klient"),
+    )
+    photos = []
+    for u in photo:
+        img = _download(u)
+        if img is not None:
+            photos.append(img)
+    paths = R.render_stories(brand, items, out_dir, photos=photos or None)
+    urls = [f"{BASE_URL}/static/{job}/{os.path.basename(p)}" for p in paths]
+    return JSONResponse({"job_id": job, "count": len(urls), "stories": urls,
+                         "texts": [it["text"] for it in items]})
+
+
 def _vision_bytes(raw: bytes):
     """Przygotowuje bajty do wizji: downscale do max 1200px dłuższego boku, JPEG."""
     try:

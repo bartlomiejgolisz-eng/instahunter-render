@@ -49,6 +49,20 @@ FONT_MED = _find_font("SpaceGrotesk-Medium.ttf", "Poppins-Medium.ttf")
 FONT_BODY = _find_font("SpaceGrotesk-Regular.ttf", "DMSans-Regular.ttf", "Poppins-Regular.ttf")
 FONT_LIGHT = _find_font("SpaceGrotesk-Light.ttf", "SpaceGrotesk-Regular.ttf", "Poppins-Light.ttf")
 
+
+def _font_ok(p):
+    try:
+        ImageFont.truetype(p, 20)
+        return True
+    except Exception:
+        return False
+
+
+# Czcionka "zwykła" do stories natywnych (biały boks + tekst jak wpisany w apce IG).
+# Preferuj systemowy DejaVu (neutralny, nie-firmowy); fallback Space Grotesk (bundlowany).
+_DEJAVU = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONT_PLAIN = _DEJAVU if _font_ok(_DEJAVU) else FONT_BOLD
+
 _FCACHE = {}
 
 
@@ -635,9 +649,13 @@ def render_cta(brand, heading, body, cta, idx, total, photo=None):
                        [[(w, True) for w, _ in ln] for ln in cl], cf, white, accent,
                        int(cf.size * 1.1))
     if body:
-        bf, bl, _ = _fit_rich(d, body, brand.font_med, 44, 32, 4, max_w=inner_w)
-        _draw_rich(base, cx, y + 34, [[(w, False) for w, _ in ln] for ln in bl],
-                   bf, taupe, accent, int(bf.size * 1.3))
+        # AUTO-FIT do ramki karty: treść nie może wyjść pod dolną krawędź (card[3]).
+        avail = (card[3] - 40) - (y + 34)
+        if avail >= 44:
+            max_body_lines = max(1, min(4, int(avail / 48)))
+            bf, bl, _ = _fit_rich(d, body, brand.font_med, 44, 28, max_body_lines, max_w=inner_w)
+            _draw_rich(base, cx, y + 34, [[(w, False) for w, _ in ln] for ln in bl],
+                       bf, taupe, accent, int(bf.size * 1.3))
 
     follow = f"Obserwuj po więcej: {brand.handle}"
     ff, fl, _ = _fit_rich(d, follow, brand.font_bold, 44, 32, 2)
@@ -696,6 +714,168 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None):
         fp = os.path.join(out_dir, f"slide_{i:02d}.png")
         img.save(fp, "PNG")
         paths.append(fp)
+    return paths
+
+
+# ---------- STORIES (1080x1920, format autentyczny) ----------
+SW, SH = 1080, 1920  # kanwa 9:16 Instagram Story
+
+
+def _story_crop(img):
+    """Zdjęcie klienta pełnoklatkowo w kadrze 9:16 (crop-to-fill, twarz nieco wyżej)."""
+    return ImageOps.fit(img.convert("RGB"), (SW, SH), method=Image.LANCZOS, centering=(0.5, 0.38))
+
+
+def _story_scrim(base, brand, frac=0.55):
+    """Delikatny gradient od dołu — czytelność tekstu bez agencyjnego wyglądu."""
+    grad = Image.new("L", (1, SH), 0)
+    for y in range(SH):
+        t = max(0.0, (y - SH * (1 - frac)) / (SH * frac))
+        grad.putpixel((0, y), int(255 * min(1.0, t ** 1.6)))
+    grad = grad.resize((SW, SH))
+    solid = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
+    solid.putalpha(grad)
+    base.alpha_composite(solid)
+
+
+def render_story(brand, photo, text, out_dir, idx=1):
+    """Jedna story 1080x1920: zdjęcie klienta + gradient + krótki natywny tekst nisko.
+
+    Cel: ma wyglądać, jakby klient sam wrzucił (minimalnie, bez agencyjnej ramki).
+    Marker *słowo* w tekście = akcent koloru. Bez zdjęcia = samo tło brandu.
+    """
+    base = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
+    if photo is not None:
+        ph = _warm_grade(_story_crop(photo))
+        base.paste(ph, (0, 0))
+        base = base.convert("RGBA")
+        _story_scrim(base, brand, frac=0.55)
+    else:
+        # bez zdjęcia: subtelna winieta na tle brandu
+        top = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
+        base.alpha_composite(top)
+    d = ImageDraw.Draw(base)
+    white, accent = hex2rgb(brand.white), hex2rgb(brand.accent)
+    margin = 96
+    tf, tl, _ = _fit_rich(d, text or "", brand.font_bold, 74, 42, 7, max_w=SW - 2 * margin)
+    lh = int(tf.size * 1.2)
+    block_h = lh * max(1, len(tl))
+    y = SH - 320 - block_h
+    _draw_rich(base, margin, y, tl, tf, white, accent, lh, shadow=True)
+    os.makedirs(out_dir, exist_ok=True)
+    fp = os.path.join(out_dir, f"story_{idx:02d}.png")
+    base.convert("RGB").save(fp, "PNG")
+    return fp
+
+
+def _wrap_plain(d, text, font, max_w):
+    words = str(text).split()
+    lines, cur = [], ""
+    for w in words:
+        t = (cur + " " + w).strip()
+        if d.textlength(t, font=font) <= max_w or not cur:
+            cur = t
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines or [""]
+
+
+def _fit_plain(d, text, path, hi, lo, max_lines, max_w):
+    for s in range(hi, lo - 1, -3):
+        f = _f(path, s)
+        w = _wrap_plain(d, text, f, max_w)
+        if len(w) <= max_lines:
+            return f, w
+    f = _f(path, lo)
+    return f, _wrap_plain(d, text, f, max_w)
+
+
+def render_story_native(brand, photo, lines, out_dir, idx=1):
+    """Story w stylu NATYWNYM Instagrama: zdjęcie + tekst w białych zaokrąglonych boksach
+    (jak wpisany w samej apce), zwykła czcionka, storytelling. Linia w *...* = boks z
+    akcentem (czerwony tekst) np. CTA 'Zobacz dalej!'. Bez agencyjnych ozdobników."""
+    base = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
+    if photo is not None:
+        base.paste(_story_crop(photo), (0, 0))
+        base = base.convert("RGBA")
+    d = ImageDraw.Draw(base)
+    accent = hex2rgb(brand.accent)
+    black = (24, 22, 18)
+    margin, pad_x, pad_y, gap, radius = 70, 34, 22, 26, 26
+
+    parsed = []
+    for ln in lines:
+        s = str(ln).strip()
+        if not s:
+            continue
+        acc = s.startswith("*") and s.endswith("*") and len(s) > 1
+        parsed.append((s.strip("*").strip(), acc))
+    if not parsed:
+        parsed = [("", False)]
+
+    max_w = SW - 2 * margin - 2 * pad_x
+    boxes = []
+    for txt, acc in parsed:
+        f, wrapped = _fit_plain(d, txt, FONT_PLAIN, 62, 40, 4, max_w)
+        boxes.append((wrapped, f, acc))
+
+    line_gap = 1.16
+    total_h = sum(int(f.size * line_gap) * len(w) + 2 * pad_y for (w, f, acc) in boxes)
+    total_h += gap * (len(boxes) - 1)
+    y = max(int(SH * 0.14), (SH - total_h) // 3)
+
+    for wrapped, f, acc in boxes:
+        line_h = int(f.size * line_gap)
+        box_h = line_h * len(wrapped) + 2 * pad_y
+        tw = max(d.textlength(l, font=f) for l in wrapped)
+        box_w = int(tw) + 2 * pad_x
+        bx = (SW - box_w) // 2
+        ImageDraw.Draw(base).rounded_rectangle(
+            [bx, y, bx + box_w, y + box_h], radius=radius, fill=(255, 255, 255, 255))
+        col = accent if acc else black
+        ty = y + pad_y
+        for l in wrapped:
+            lw = d.textlength(l, font=f)
+            ImageDraw.Draw(base).text(((SW - lw) // 2, ty), l, font=f, fill=col)
+            ty += line_h
+        y += box_h + gap
+    os.makedirs(out_dir, exist_ok=True)
+    fp = os.path.join(out_dir, f"story_{idx:02d}.png")
+    base.convert("RGB").save(fp, "PNG")
+    return fp
+
+
+def render_stories(brand, items, out_dir, photos=None):
+    """items: lista dictów {'text', 'format'('tip'|'native'), 'photo'} albo str.
+    format 'native' -> render_story_native (linie tekstu rozdzielone \\n; *linia* = akcent).
+    format 'tip' (domyślny) -> render_story (zdjęcie + tekst brandowy nisko).
+    photos: rotacja zdjęć. Zwraca listę ścieżek PNG."""
+    os.makedirs(out_dir, exist_ok=True)
+    photos = photos or []
+    paths = []
+    for i, it in enumerate(items, start=1):
+        ph, fmt = None, "tip"
+        if isinstance(it, dict):
+            text = it.get("text", "")
+            ph = it.get("photo")
+            fmt = (it.get("format") or "tip").strip().lower()
+        else:
+            text = str(it)
+        if ph is None and photos:
+            ph = photos[(i - 1) % len(photos)]
+        if isinstance(ph, str):
+            try:
+                ph = Image.open(ph)
+            except Exception:
+                ph = None
+        if fmt == "native":
+            lines = [l for l in str(text).split("\n")]
+            paths.append(render_story_native(brand, ph, lines, out_dir, idx=i))
+        else:
+            paths.append(render_story(brand, ph, text, out_dir, idx=i))
     return paths
 
 
