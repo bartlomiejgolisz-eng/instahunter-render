@@ -422,6 +422,7 @@ async def render_tokens_endpoint(
     x_api_key: str = Header(default=""),
     bg: str = "", bg_alt: str = "", accent: str = "", taupe: str = "",
     white: str = "", handle: str = "", glow: bool = True, ornaments: bool = True,
+    font: str = "",
     photo: List[str] = Query(default=[]),
     avatar: str = "",
     job_id: Optional[str] = None,
@@ -441,7 +442,7 @@ async def render_tokens_endpoint(
         bg=_hex_or("#111008", bg), bg_alt=_hex_or("#F5EFE2", bg_alt),
         accent=_hex_or("#E8402A", accent), taupe=_hex_or("#8A7A6A", taupe),
         white=_hex_or("#FFFFFF", white), handle=(handle.strip() or "@klient"),
-        glow=glow, ornaments=ornaments,
+        glow=glow, ornaments=ornaments, font_family=font.strip(),
     )
 
     photos = []
@@ -467,6 +468,7 @@ async def render_story_endpoint(
     request: Request,
     x_api_key: str = Header(default=""),
     bg: str = "", accent: str = "", taupe: str = "", white: str = "", handle: str = "",
+    font: str = "",
     photo: List[str] = Query(default=[]),
     job_id: Optional[str] = None,
 ):
@@ -512,7 +514,7 @@ async def render_story_endpoint(
     brand = R.Brand(
         bg=_hex_or("#111008", bg), accent=_hex_or("#E8402A", accent),
         taupe=_hex_or("#8A7A6A", taupe), white=_hex_or("#FFFFFF", white),
-        handle=(handle.strip() or "@klient"),
+        handle=(handle.strip() or "@klient"), font_family=font.strip(),
     )
     photos = []
     for u in photo:

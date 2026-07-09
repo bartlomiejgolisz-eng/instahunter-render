@@ -73,6 +73,44 @@ def _f(path, size):
     return _FCACHE[k]
 
 
+# ---------- BIBLIOTEKA FONTÓW (czcionka PER KLIENT z brandbooka) ----------
+# Produkcja (Render) ma tylko to, co w repo fonts/. Każdy krój = pliki bold+regular w fonts/.
+# Dokładamy kolejne kroje do fonts/ i do FONT_LIBRARY, gdy klient przynosi nowy font.
+_FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+# Każdy brand = PARA fontów, które się komponują: nagłówek (display) + tekst (body).
+# Nazwa (z brandbooka) wskazuje krój wiodący; body dobrany tak, by ładnie pasował.
+FONT_PAIRINGS = {
+    "space grotesk": {"head": "SpaceGrotesk-Bold.ttf", "body": "Lato-Regular.ttf"},
+    "lato":          {"head": "Lato-Bold.ttf",         "body": "Carlito-Regular.ttf"},
+    "carlito":       {"head": "Carlito-Bold.ttf",      "body": "Lato-Regular.ttf"},
+    "caladea":       {"head": "Caladea-Bold.ttf",      "body": "Lato-Regular.ttf"},  # serif + sans
+    "dejavu":        {"head": "DejaVuSans-Bold.ttf",   "body": "Lato-Regular.ttf"},
+}
+# Aliasy nazw z brandbooków -> najbliższy metrycznie krój wiodący w bibliotece.
+FONT_ALIASES = {
+    "grotesk": "space grotesk", "spacegrotesk": "space grotesk", "space-grotesk": "space grotesk",
+    "poppins": "space grotesk", "montserrat": "space grotesk", "geometric": "space grotesk",
+    "lato": "lato", "opensans": "lato", "open sans": "lato", "sans": "lato", "roboto": "lato",
+    "calibri": "carlito", "carlito": "carlito",
+    "cambria": "caladea", "caladea": "caladea", "georgia": "caladea", "times": "caladea",
+    "times new roman": "caladea", "serif": "caladea", "playfair": "caladea",
+    "arial": "dejavu", "helvetica": "dejavu", "dejavu": "dejavu",
+}
+
+
+def resolve_font_family(name):
+    """Nazwa kroju (z brandbooka klienta) -> PARA ścieżek {head, body} do złożenia.
+    Puste/nieznane -> domyślna para (Space Grotesk + Lato). Nigdy nie zawodzi."""
+    key = (name or "").strip().lower()
+    key = FONT_ALIASES.get(key, key)
+    pair = FONT_PAIRINGS.get(key) or FONT_PAIRINGS["space grotesk"]
+
+    def _path(fn):
+        p = os.path.join(_FONT_DIR, fn)
+        return p if os.path.exists(p) else FONT_BOLD
+    return {"head": _path(pair["head"]), "body": _path(pair["body"])}
+
+
 # ---------- BRAND ----------
 @dataclass
 class Brand:
@@ -89,6 +127,16 @@ class Brand:
     font_bold: str = FONT_BOLD
     font_med: str = FONT_MED
     font_body: str = FONT_BODY
+    font_family: str = ""        # nazwa kroju z brandbooka klienta (puste = Space Grotesk)
+
+    def __post_init__(self):
+        # PARA fontów per klient: nagłówek (head) + tekst (body) z brandbooka. Zawsze dwa
+        # komponujące się kroje (nie jeden wszędzie). Puste = domyślna para Space Grotesk+Lato.
+        fam = resolve_font_family(self.font_family)
+        self.font_heavy = fam["head"]
+        self.font_bold = fam["head"]
+        self.font_med = fam["head"]
+        self.font_body = fam["body"]
 
 
 # ---------- KOLORY / TEKST ----------
@@ -729,25 +777,26 @@ def _story_crop(img, centering=(0.5, 0.38)):
 
 
 def _story_scrim(base, brand, frac=0.55, strength=1.0):
-    """Delikatny gradient od dołu — czytelność tekstu bez agencyjnego wyglądu."""
+    """Delikatny gradient od dołu — czytelność tekstu. ZAWSZE CZARNY (niezależny od koloru
+    tła marki), żeby nie robił się np. niebieski przy granatowym brandzie."""
     grad = Image.new("L", (1, SH), 0)
     for y in range(SH):
         t = max(0.0, (y - SH * (1 - frac)) / (SH * frac))
         grad.putpixel((0, y), int(255 * min(1.0, t ** 1.6) * strength))
     grad = grad.resize((SW, SH))
-    solid = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
+    solid = Image.new("RGBA", (SW, SH), (0, 0, 0, 255))
     solid.putalpha(grad)
     base.alpha_composite(solid)
 
 
 def _story_scrim_top(base, brand, frac=0.32, strength=0.95):
-    """Gradient od GÓRY — gdy tekst siedzi wyżej (slajdy neutralne)."""
+    """Gradient od GÓRY — gdy tekst siedzi wyżej (slajdy neutralne). ZAWSZE CZARNY."""
     grad = Image.new("L", (1, SH), 0)
     for y in range(SH):
         t = max(0.0, (SH * frac - y) / (SH * frac))
         grad.putpixel((0, y), int(255 * min(1.0, t ** 1.5) * strength))
     grad = grad.resize((SW, SH))
-    solid = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
+    solid = Image.new("RGBA", (SW, SH), (0, 0, 0, 255))
     solid.putalpha(grad)
     base.alpha_composite(solid)
 
@@ -799,6 +848,11 @@ def render_story(brand, photo, text, out_dir, idx=1, zone="bottom", total=4,
     _story_progress(base, brand, idx, total)
 
     raw = [l.strip() for l in str(text or "").split("\n") if l.strip()]
+    # Ostatnia linia w gwiazdkach (*...*) = koralowy GUZIK CTA (jak w referencji Formatu 2).
+    if cta is None and len(raw) > 1 and raw[-1].startswith("*") and raw[-1].endswith("*") \
+            and len(raw[-1]) > 2:
+        cta = raw[-1].strip("*").strip()
+        raw = raw[:-1]
     statement = raw[0] if raw else ""
     body = " ".join(raw[1:]).strip()
 
@@ -876,7 +930,23 @@ def _story_textbox(base, x, y, wrapped, font, fill, text_col, pad_x=32, pad_y=20
     return bw, bh
 
 
-def render_story_native(brand, photo, lines, out_dir, idx=1, zone="bottom", layout=None):
+# Warianty UKŁADU środkowych (neutralnych) slajdów native — tekst ROZRZUCONY po całej
+# wysokości kadru z DUŻYMI, nierównymi odstępami (nie sklejony w jednym miejscu): raz
+# nagłówek wysoko z dużą przerwą, raz zgrupowany niżej. Lewy margines wspólny (bez
+# przesunięć w poziomie — jak w referencjach). start = górna krawędź 1. elementu jako
+# ułamek wysokości; gaps = odstępy między kolejnymi elementami. Dobierane po numerze slajdu.
+_NATIVE_LAYOUTS = [
+    {"start": 0.30, "gaps": [46, 300, 90]},   # nagłówek wysoko, duża przerwa, tekst nisko
+    {"start": 0.33, "gaps": [44, 96, 16]},    # wysoko, umiarkowany rozrzut
+    {"start": 0.52, "gaps": [26, 22, 20]},    # zgrupowane niżej
+    {"start": 0.28, "gaps": [230, 60, 40]},   # nagłówek b. wysoko, duża przerwa, grupa
+    {"start": 0.40, "gaps": [60, 180, 30]},   # środek, rozrzut
+    {"start": 0.35, "gaps": [280, 46, 16]},   # wysoko, wielka przerwa, para nisko
+    {"start": 0.47, "gaps": [30, 210, 24]},   # środek, boks blisko, przerwa, tekst nisko
+]
+
+
+def render_story_native(brand, photo, lines, out_dir, idx=1, zone="bottom", layout=None, seed=0):
     """FORMAT 2 (autentyczny, storytellingowy): zdjęcie + WIĘCEJ tekstu w MIKSIE stylów,
     jakby klient sam zrobił w Canvie/IG. 1. linia = nagłówek (duży, bez tła, cień).
     Kolejne linie = białe boksy (ciemny tekst). `~linia~` = bez tła (biały tekst).
@@ -918,16 +988,23 @@ def render_story_native(brand, photo, lines, out_dir, idx=1, zone="bottom", layo
         else:
             kind, txt = "box", s
         if kind == "head":
+            # NAGŁÓWEK — krój display (head)
             f, w = _fit_plain(d, txt, brand.font_bold, 84, 56, 3, max_w)
             lh = int(f.size * 1.12)
             h = lh * len(w)
         elif kind == "plain":
-            f, w = _fit_plain(d, txt, brand.font_bold, 58, 44, 3, max_w)
-            lh = int(f.size * 1.16)
+            # tekst bez tła — krój tekstowy (body), lżejszy kontrast z nagłówkiem
+            f, w = _fit_plain(d, txt, brand.font_body, 56, 42, 3, max_w)
+            lh = int(f.size * 1.18)
             h = lh * len(w)
-        else:  # box / accent
-            f, w = _fit_plain(d, txt, brand.font_bold, 56, 40, 3, inner)
+        elif kind == "accent":
+            # koralowy boks/CTA — krój display (head), mocny akcent
+            f, w = _fit_plain(d, txt, brand.font_bold, 54, 40, 3, inner)
             lh = int(f.size * 1.12)
+            h = lh * len(w) + 2 * 20
+        else:  # box — krój tekstowy (body)
+            f, w = _fit_plain(d, txt, brand.font_body, 54, 40, 3, inner)
+            lh = int(f.size * 1.2)
             h = lh * len(w) + 2 * 20
         els.append((kind, w, f, lh, h))
 
@@ -935,28 +1012,30 @@ def render_story_native(brand, photo, lines, out_dir, idx=1, zone="bottom", layo
     n = len(els)
     sum_h = sum(e[4] for e in els)
     lay = layout or {}
-    # domyślne odstępy/przesunięcia
-    gaps = [base_gap] * (n - 1)
+    gaps = [base_gap] * max(0, n - 1)
     xoff = [0] * n
     if not top_anchor:
+        # HOOK / CTA (zdjęcie z osobą): blok zakotwiczony GÓRĄ na stałej wysokości, żeby
+        # 1. slajd i CTA były na tej samej (wyższej) wysokości; wciąż poniżej twarzy.
         total_h = sum_h + sum(gaps)
-        y = SH - int(SH * 0.15) - total_h
-        y = max(int(SH * 0.42), y)
-        y = min(y, SH - total_h - int(SH * 0.04))
+        y = int(SH * 0.56)
+        y = min(y, SH - total_h - int(SH * 0.05))
+        y = max(int(SH * 0.40), y)
     else:
-        # slajd neutralny: skupisko o kontrolowanym rytmie (nie rozciągane na całą wysokość)
-        g = lay.get("gaps")
-        if g:
-            gaps = [int(v) for v in g][: n - 1]
-            gaps += [base_gap] * (n - 1 - len(gaps))
-        o = lay.get("xoff")
-        if o:
-            xoff = [int(v) for v in o][:n]
-            xoff += [0] * (n - len(xoff))
-        vpos = lay.get("vpos", 0.5)
+        # SLAJD ŚRODKOWY (zdjęcie neutralne): ROZRZUCENIE po kadrze — duże, nierówne odstępy.
+        # Wariant losowany deterministycznie per KARTA (seed) + numer slajdu, żeby układ
+        # był RÓŻNY z karty na kartę (nie dwa sztywne wzory), zawsze premium i czytelny.
+        if not lay:
+            lay = _NATIVE_LAYOUTS[(seed + idx) % len(_NATIVE_LAYOUTS)]
+        gaps = [int(v) for v in lay.get("gaps", [])][: max(0, n - 1)]
+        if len(gaps) < n - 1:
+            gaps += [90] * (n - 1 - len(gaps))
+        if n >= 2 and els[-1][0] == "accent":
+            gaps[-1] = 16  # akcent/CTA blisko poprzedniego elementu
         total_h = sum_h + sum(gaps[: n - 1])
-        y = int(SH * vpos) - total_h // 2
-        y = max(int(SH * 0.10), min(y, SH - total_h - int(SH * 0.06)))
+        y = int(SH * lay.get("start", 0.34))
+        y = min(y, SH - total_h - int(SH * 0.07))
+        y = max(int(SH * 0.06), y)
 
     for i, (kind, w, f, lh, h) in enumerate(els):
         ew = max(int(d.textlength(l, font=f)) for l in w)
@@ -982,7 +1061,7 @@ def render_story_native(brand, photo, lines, out_dir, idx=1, zone="bottom", layo
         elif kind == "accent":
             _story_textbox(base, xx, y, w, f, accent + (255,), (255, 255, 255))
             y += h
-        else:  # box
+        else:  # box (zawsze biały; koral zarezerwowany dla *akcentu*)
             _story_textbox(base, xx, y, w, f, (255, 255, 255, 255), ink)
             y += h
         if i < n - 1:
@@ -994,12 +1073,18 @@ def render_story_native(brand, photo, lines, out_dir, idx=1, zone="bottom", layo
     return fp
 
 
-def render_stories(brand, items, out_dir, photos=None):
+def render_stories(brand, items, out_dir, photos=None, seed=None):
     """items: lista dictów {'text', 'format'('tip'|'native'), 'photo'} albo str.
     format 'native' -> render_story_native (linie tekstu rozdzielone \\n; *linia* = akcent).
     format 'tip' (domyślny) -> render_story (zdjęcie + tekst brandowy nisko).
-    photos: rotacja zdjęć. Zwraca listę ścieżek PNG."""
+    photos: rotacja zdjęć. seed = wariacja układu native per KARTA (domyślnie z nazwy job).
+    Zwraca listę ścieżek PNG."""
     os.makedirs(out_dir, exist_ok=True)
+    if seed is None:
+        # stabilny hash z nazwy joba -> ten sam układ przy re-renderze, różny między kartami
+        seed = 0
+        for c in os.path.basename(os.path.normpath(out_dir)):
+            seed = (seed * 31 + ord(c)) % 100000
     photos = photos or []
     paths = []
     for i, it in enumerate(items, start=1):
@@ -1024,7 +1109,7 @@ def render_stories(brand, items, out_dir, photos=None):
             zone = "bottom" if ph is not None else "full"
         if fmt == "native":
             lines = [l for l in str(text).split("\n")]
-            paths.append(render_story_native(brand, ph, lines, out_dir, idx=i, zone=zone))
+            paths.append(render_story_native(brand, ph, lines, out_dir, idx=i, zone=zone, seed=seed))
         else:
             paths.append(render_story(brand, ph, text, out_dir, idx=i, zone=zone))
     return paths
