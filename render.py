@@ -721,52 +721,115 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None):
 SW, SH = 1080, 1920  # kanwa 9:16 Instagram Story
 
 
-def _story_crop(img):
-    """Zdjęcie klienta pełnoklatkowo w kadrze 9:16 (crop-to-fill, twarz nieco wyżej)."""
-    return ImageOps.fit(img.convert("RGB"), (SW, SH), method=Image.LANCZOS, centering=(0.5, 0.38))
+def _story_crop(img, centering=(0.5, 0.38)):
+    """Zdjęcie pełnoklatkowo w kadrze 9:16 (crop-to-fill). exif_transpose = poprawny obrót
+    (telefony zapisują poziome/pionowe z EXIF; bez tego lądują bokiem)."""
+    img = ImageOps.exif_transpose(img.convert("RGB"))
+    return ImageOps.fit(img, (SW, SH), method=Image.LANCZOS, centering=centering)
 
 
-def _story_scrim(base, brand, frac=0.55):
+def _story_scrim(base, brand, frac=0.55, strength=1.0):
     """Delikatny gradient od dołu — czytelność tekstu bez agencyjnego wyglądu."""
     grad = Image.new("L", (1, SH), 0)
     for y in range(SH):
         t = max(0.0, (y - SH * (1 - frac)) / (SH * frac))
-        grad.putpixel((0, y), int(255 * min(1.0, t ** 1.6)))
+        grad.putpixel((0, y), int(255 * min(1.0, t ** 1.6) * strength))
     grad = grad.resize((SW, SH))
     solid = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
     solid.putalpha(grad)
     base.alpha_composite(solid)
 
 
-def render_story(brand, photo, text, out_dir, idx=1, zone="bottom"):
-    """Jedna story 1080x1920: zdjęcie klienta + gradient + krótki natywny tekst nisko.
+def _story_scrim_top(base, brand, frac=0.32, strength=0.95):
+    """Gradient od GÓRY — gdy tekst siedzi wyżej (slajdy neutralne)."""
+    grad = Image.new("L", (1, SH), 0)
+    for y in range(SH):
+        t = max(0.0, (SH * frac - y) / (SH * frac))
+        grad.putpixel((0, y), int(255 * min(1.0, t ** 1.5) * strength))
+    grad = grad.resize((SW, SH))
+    solid = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
+    solid.putalpha(grad)
+    base.alpha_composite(solid)
 
-    Cel: ma wyglądać, jakby klient sam wrzucił (minimalnie, bez agencyjnej ramki).
-    Marker *słowo* w tekście = akcent koloru. Bez zdjęcia = samo tło brandu.
-    zone: 'bottom' (domyślnie) = tekst nisko (bezpieczne dla twarzy); 'full' = środek
-    (zdjęcie neutralne / brak zdjęcia). Format 'tip' zwykle zostaje 'bottom'.
-    """
+
+def _draw_pill(base, x, y, text, font, fill, text_col, pad_x=44, pad_y=24):
+    """Jeden zaokrąglony 'przycisk' (CTA/akcent) — jedyny wypełniony element, przez co
+    się wyróżnia; reszta tekstu leży bezpośrednio na zdjęciu."""
+    d = ImageDraw.Draw(base)
+    tw = int(d.textlength(text, font=font))
+    h = int(font.size * 1.0) + 2 * pad_y
+    w = tw + 2 * pad_x
+    d.rounded_rectangle([x, y, x + w, y + h], radius=h // 2, fill=fill)
+    d.text((x + pad_x, y + pad_y - int(font.size * 0.06)), text, font=font, fill=text_col)
+    return w, h
+
+
+def _story_progress(base, brand, idx, total, y=54):
+    """Segmentowy pasek postępu u góry (jak w stories) — element brandowy Formatu 1."""
+    if total < 2:
+        return
+    accent, white = hex2rgb(brand.accent), (255, 255, 255)
+    d = ImageDraw.Draw(base, "RGBA")
+    m, gap, h = 84, 12, 7
+    seg = (SW - 2 * m - gap * (total - 1)) / total
+    for i in range(total):
+        x0 = int(m + i * (seg + gap))
+        x1 = int(x0 + seg)
+        col = accent + (255,) if i < idx else white + (90,)
+        d.rounded_rectangle([x0, y, x1, y + h], radius=h // 2, fill=col)
+
+
+def render_story(brand, photo, text, out_dir, idx=1, zone="bottom", total=4,
+                 kicker=None, cta=None):
+    """FORMAT 1 (jedno zdjęcie przez całą serię, spójny szablon): pasek postępu u góry
+    (element stories) + statement (duży, bold, *akcent*) w DOLNEJ CZĘŚCI (nie na samym
+    dole) + opcjonalna linia dopowiedzenia + opcjonalny CTA-pill. BEZ handla i kickera
+    (to nie karuzela). Tekst z \\n: 1. linia = statement, reszta = dopowiedzenie."""
     base = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
     if photo is not None:
-        ph = _warm_grade(_story_crop(photo))
-        base.paste(ph, (0, 0))
+        base.paste(_warm_grade(_story_crop(photo)), (0, 0))
         base = base.convert("RGBA")
-        _story_scrim(base, brand, frac=0.55)
-    else:
-        # bez zdjęcia: subtelna winieta na tle brandu
-        top = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
-        base.alpha_composite(top)
+        _story_scrim(base, brand, frac=0.62, strength=1.0)
+        _story_scrim_top(base, brand, frac=0.18, strength=0.6)
     d = ImageDraw.Draw(base)
     white, accent = hex2rgb(brand.white), hex2rgb(brand.accent)
-    margin = 96
-    tf, tl, _ = _fit_rich(d, text or "", brand.font_bold, 74, 42, 7, max_w=SW - 2 * margin)
-    lh = int(tf.size * 1.2)
-    block_h = lh * max(1, len(tl))
-    if zone == "full":
-        y = max(int(SH * 0.14), (SH - block_h) // 2)
-    else:
-        y = SH - 320 - block_h
-    _draw_rich(base, margin, y, tl, tf, white, accent, lh, shadow=True)
+    margin = 88
+    max_w = SW - 2 * margin
+
+    _story_progress(base, brand, idx, total)
+
+    raw = [l.strip() for l in str(text or "").split("\n") if l.strip()]
+    statement = raw[0] if raw else ""
+    body = " ".join(raw[1:]).strip()
+
+    sf, sl, _ = _fit_rich(d, statement, brand.font_bold, 94, 54, 4, max_w=max_w)
+    slh = int(sf.size * 1.13)
+    s_h = slh * max(1, len(sl))
+    bf = bl = None
+    b_h = 0
+    if body:
+        bf, bl, _ = _fit_rich(d, body, brand.font_body, 48, 36, 3, max_w=max_w)
+        b_h = int(bf.size * 1.34) * len(bl)
+    cta_font = _f(brand.font_bold, 42)
+    cta_h = int(cta_font.size) + 48 if cta else 0
+
+    gap_body, gap_cta = 24, 40
+    total_h = s_h + (gap_body + b_h if body else 0) + (gap_cta + cta_h if cta else 0)
+
+    # dolna część kadru, ale uniesione znad samego dołu
+    y = int(SH * 0.80) - total_h
+    y = max(int(SH * 0.44), y)
+    x = margin
+    _draw_rich(base, x, y, sl, sf, white, accent, slh, shadow=True)
+    y += s_h
+    if body:
+        y += gap_body
+        _draw_rich(base, x, y, bl, bf, white, accent, int(bf.size * 1.34), shadow=True)
+        y += b_h
+    if cta:
+        y += gap_cta
+        _draw_pill(base, x, y, cta, cta_font, accent, (255, 255, 255))
+
     os.makedirs(out_dir, exist_ok=True)
     fp = os.path.join(out_dir, f"story_{idx:02d}.png")
     base.convert("RGB").save(fp, "PNG")
@@ -798,68 +861,133 @@ def _fit_plain(d, text, path, hi, lo, max_lines, max_w):
     return f, _wrap_plain(d, text, f, max_w)
 
 
-def render_story_native(brand, photo, lines, out_dir, idx=1, zone="bottom"):
-    """Story w stylu NATYWNYM Instagrama: zdjęcie + tekst w białych zaokrąglonych boksach
-    (jak wpisany w samej apce), zwykła czcionka, storytelling. Linia w *...* = boks z
-    akcentem (czerwony tekst) np. CTA 'Zobacz dalej!'. Bez agencyjnych ozdobników.
+def _story_textbox(base, x, y, wrapped, font, fill, text_col, pad_x=32, pad_y=20,
+                   radius=24, line_gap=1.12):
+    """Zaokrąglony boks tekstowy (autentyczny styl IG/Canva), lewa krawędź w x."""
+    d = ImageDraw.Draw(base, "RGBA")
+    line_h = int(font.size * line_gap)
+    tw = max(d.textlength(l, font=font) for l in wrapped)
+    bw, bh = int(tw) + 2 * pad_x, line_h * len(wrapped) + 2 * pad_y
+    d.rounded_rectangle([x, y, x + bw, y + bh], radius=radius, fill=fill)
+    ty = y + pad_y
+    for l in wrapped:
+        d.text((x + pad_x, ty), l, font=font, fill=text_col)
+        ty += line_h
+    return bw, bh
 
-    zone: 'bottom' = zdjęcie z TWARZĄ (folder A) -> boksy w DOLNEJ POŁOWIE (nie nachodzą
-    na twarz); 'full' = zdjęcie NEUTRALNE (folder B) albo brak zdjęcia -> boksy mogą
-    zająć środek/całość."""
+
+def render_story_native(brand, photo, lines, out_dir, idx=1, zone="bottom", layout=None):
+    """FORMAT 2 (autentyczny, storytellingowy): zdjęcie + WIĘCEJ tekstu w MIKSIE stylów,
+    jakby klient sam zrobił w Canvie/IG. 1. linia = nagłówek (duży, bez tła, cień).
+    Kolejne linie = białe boksy (ciemny tekst). `~linia~` = bez tła (biały tekst).
+    `*linia*` = boks akcentowy (koral). Miks boks/bez-tła = naturalny wygląd i czytelność
+    także na jasnym tle.
+
+    zone: 'bottom' = zdjęcie z TWARZĄ (folder A) -> nisko, gradient od dołu.
+    'full' = zdjęcie NEUTRALNE (folder B) -> wyżej, więcej miejsca na tekst."""
     base = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
-    if photo is not None:
+    has_photo = photo is not None
+    if has_photo:
         base.paste(_story_crop(photo), (0, 0))
         base = base.convert("RGBA")
-    d = ImageDraw.Draw(base)
-    accent = hex2rgb(brand.accent)
-    black = (24, 22, 18)
-    margin, pad_x, pad_y, gap, radius = 70, 34, 22, 26, 26
-
-    parsed = []
-    for ln in lines:
-        s = str(ln).strip()
-        if not s:
-            continue
-        acc = s.startswith("*") and s.endswith("*") and len(s) > 1
-        parsed.append((s.strip("*").strip(), acc))
-    if not parsed:
-        parsed = [("", False)]
-
-    max_w = SW - 2 * margin - 2 * pad_x
-    boxes = []
-    for txt, acc in parsed:
-        f, wrapped = _fit_plain(d, txt, FONT_PLAIN, 62, 40, 4, max_w)
-        boxes.append((wrapped, f, acc))
-
-    line_gap = 1.16
-    total_h = sum(int(f.size * line_gap) * len(w) + 2 * pad_y for (w, f, acc) in boxes)
-    total_h += gap * (len(boxes) - 1)
-    if zone == "bottom":
-        # blok w DOLNEJ POŁOWIE, z marginesem od dołu; nigdy powyżej środka kadru
-        bottom_margin = int(SH * 0.12)
-        y = SH - total_h - bottom_margin
-        y = max(int(SH * 0.5), y)
-        # gdyby blok był ekstremalnie wysoki, nie wyjść poza kadr u góry
-        y = max(int(SH * 0.14), min(y, SH - total_h - int(SH * 0.04)))
+    top_anchor = (zone == "full")
+    if has_photo:
+        if top_anchor:
+            _story_scrim_top(base, brand, frac=0.66, strength=0.9)
+            _story_scrim(base, brand, frac=0.30, strength=0.45)
+        else:
+            _story_scrim(base, brand, frac=0.70, strength=0.95)
     else:
-        # 'full' — środek kadru (zdjęcie neutralne albo brak zdjęcia)
-        y = max(int(SH * 0.14), (SH - total_h) // 2)
+        _story_scrim(base, brand, frac=1.0, strength=0.5)
+    d = ImageDraw.Draw(base)
+    white, accent, ink = hex2rgb(brand.white), hex2rgb(brand.accent), (22, 20, 17)
+    margin = 76
+    max_w = SW - 2 * margin
+    inner = max_w - 2 * 32  # szerokość tekstu w boksie
 
-    for wrapped, f, acc in boxes:
-        line_h = int(f.size * line_gap)
-        box_h = line_h * len(wrapped) + 2 * pad_y
-        tw = max(d.textlength(l, font=f) for l in wrapped)
-        box_w = int(tw) + 2 * pad_x
-        bx = (SW - box_w) // 2
-        ImageDraw.Draw(base).rounded_rectangle(
-            [bx, y, bx + box_w, y + box_h], radius=radius, fill=(255, 255, 255, 255))
-        col = accent if acc else black
-        ty = y + pad_y
-        for l in wrapped:
-            lw = d.textlength(l, font=f)
-            ImageDraw.Draw(base).text(((SW - lw) // 2, ty), l, font=f, fill=col)
-            ty += line_h
-        y += box_h + gap
+    # parsowanie linii na (kind, wrapped, font, line_h)
+    raw = [str(l).strip() for l in lines if str(l).strip()]
+    els = []  # (kind, wrapped, font, line_h, h)
+    for i, s in enumerate(raw):
+        if s.startswith("*") and s.endswith("*") and len(s) > 2:
+            kind, txt = "accent", s.strip("*").strip()
+        elif s.startswith("~") and s.endswith("~") and len(s) > 2:
+            kind, txt = "plain", s.strip("~").strip()
+        elif i == 0:
+            kind, txt = "head", s
+        else:
+            kind, txt = "box", s
+        if kind == "head":
+            f, w = _fit_plain(d, txt, brand.font_bold, 84, 56, 3, max_w)
+            lh = int(f.size * 1.12)
+            h = lh * len(w)
+        elif kind == "plain":
+            f, w = _fit_plain(d, txt, brand.font_bold, 58, 44, 3, max_w)
+            lh = int(f.size * 1.16)
+            h = lh * len(w)
+        else:  # box / accent
+            f, w = _fit_plain(d, txt, brand.font_bold, 56, 40, 3, inner)
+            lh = int(f.size * 1.12)
+            h = lh * len(w) + 2 * 20
+        els.append((kind, w, f, lh, h))
+
+    base_gap = 22
+    n = len(els)
+    sum_h = sum(e[4] for e in els)
+    lay = layout or {}
+    # domyślne odstępy/przesunięcia
+    gaps = [base_gap] * (n - 1)
+    xoff = [0] * n
+    if not top_anchor:
+        total_h = sum_h + sum(gaps)
+        y = SH - int(SH * 0.15) - total_h
+        y = max(int(SH * 0.42), y)
+        y = min(y, SH - total_h - int(SH * 0.04))
+    else:
+        # slajd neutralny: skupisko o kontrolowanym rytmie (nie rozciągane na całą wysokość)
+        g = lay.get("gaps")
+        if g:
+            gaps = [int(v) for v in g][: n - 1]
+            gaps += [base_gap] * (n - 1 - len(gaps))
+        o = lay.get("xoff")
+        if o:
+            xoff = [int(v) for v in o][:n]
+            xoff += [0] * (n - len(xoff))
+        vpos = lay.get("vpos", 0.5)
+        total_h = sum_h + sum(gaps[: n - 1])
+        y = int(SH * vpos) - total_h // 2
+        y = max(int(SH * 0.10), min(y, SH - total_h - int(SH * 0.06)))
+
+    for i, (kind, w, f, lh, h) in enumerate(els):
+        ew = max(int(d.textlength(l, font=f)) for l in w)
+        if kind in ("accent", "box"):
+            ew += 64
+        xx = margin + (xoff[i] if i < len(xoff) else 0)
+        xx = min(xx, SW - margin - ew)
+        xx = max(margin, xx)
+        if kind in ("head", "plain"):
+            for l in w:
+                # miękka, ale mocna ciemna aura pod napisem bez tła — czytelność na DOWOLNYM
+                # (także jasnym/zabieganym) zdjęciu neutralnym, bez twardego boksu
+                sh = Image.new("RGBA", base.size, (0, 0, 0, 0))
+                sd = ImageDraw.Draw(sh)
+                for dx, dy in ((0, 0), (0, 3)):
+                    sd.text((xx + dx, y + dy), l, font=f, fill=(0, 0, 0, 235))
+                base.alpha_composite(sh.filter(ImageFilter.GaussianBlur(17)))
+                sh2 = Image.new("RGBA", base.size, (0, 0, 0, 0))
+                ImageDraw.Draw(sh2).text((xx, y + 1), l, font=f, fill=(0, 0, 0, 205))
+                base.alpha_composite(sh2.filter(ImageFilter.GaussianBlur(6)))
+                ImageDraw.Draw(base).text((xx, y), l, font=f, fill=white)
+                y += lh
+        elif kind == "accent":
+            _story_textbox(base, xx, y, w, f, accent + (255,), (255, 255, 255))
+            y += h
+        else:  # box
+            _story_textbox(base, xx, y, w, f, (255, 255, 255, 255), ink)
+            y += h
+        if i < n - 1:
+            y += gaps[i]
+
     os.makedirs(out_dir, exist_ok=True)
     fp = os.path.join(out_dir, f"story_{idx:02d}.png")
     base.convert("RGB").save(fp, "PNG")
