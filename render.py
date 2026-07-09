@@ -738,11 +738,13 @@ def _story_scrim(base, brand, frac=0.55):
     base.alpha_composite(solid)
 
 
-def render_story(brand, photo, text, out_dir, idx=1):
+def render_story(brand, photo, text, out_dir, idx=1, zone="bottom"):
     """Jedna story 1080x1920: zdjęcie klienta + gradient + krótki natywny tekst nisko.
 
     Cel: ma wyglądać, jakby klient sam wrzucił (minimalnie, bez agencyjnej ramki).
     Marker *słowo* w tekście = akcent koloru. Bez zdjęcia = samo tło brandu.
+    zone: 'bottom' (domyślnie) = tekst nisko (bezpieczne dla twarzy); 'full' = środek
+    (zdjęcie neutralne / brak zdjęcia). Format 'tip' zwykle zostaje 'bottom'.
     """
     base = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
     if photo is not None:
@@ -760,7 +762,10 @@ def render_story(brand, photo, text, out_dir, idx=1):
     tf, tl, _ = _fit_rich(d, text or "", brand.font_bold, 74, 42, 7, max_w=SW - 2 * margin)
     lh = int(tf.size * 1.2)
     block_h = lh * max(1, len(tl))
-    y = SH - 320 - block_h
+    if zone == "full":
+        y = max(int(SH * 0.14), (SH - block_h) // 2)
+    else:
+        y = SH - 320 - block_h
     _draw_rich(base, margin, y, tl, tf, white, accent, lh, shadow=True)
     os.makedirs(out_dir, exist_ok=True)
     fp = os.path.join(out_dir, f"story_{idx:02d}.png")
@@ -793,10 +798,14 @@ def _fit_plain(d, text, path, hi, lo, max_lines, max_w):
     return f, _wrap_plain(d, text, f, max_w)
 
 
-def render_story_native(brand, photo, lines, out_dir, idx=1):
+def render_story_native(brand, photo, lines, out_dir, idx=1, zone="bottom"):
     """Story w stylu NATYWNYM Instagrama: zdjęcie + tekst w białych zaokrąglonych boksach
     (jak wpisany w samej apce), zwykła czcionka, storytelling. Linia w *...* = boks z
-    akcentem (czerwony tekst) np. CTA 'Zobacz dalej!'. Bez agencyjnych ozdobników."""
+    akcentem (czerwony tekst) np. CTA 'Zobacz dalej!'. Bez agencyjnych ozdobników.
+
+    zone: 'bottom' = zdjęcie z TWARZĄ (folder A) -> boksy w DOLNEJ POŁOWIE (nie nachodzą
+    na twarz); 'full' = zdjęcie NEUTRALNE (folder B) albo brak zdjęcia -> boksy mogą
+    zająć środek/całość."""
     base = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
     if photo is not None:
         base.paste(_story_crop(photo), (0, 0))
@@ -825,7 +834,16 @@ def render_story_native(brand, photo, lines, out_dir, idx=1):
     line_gap = 1.16
     total_h = sum(int(f.size * line_gap) * len(w) + 2 * pad_y for (w, f, acc) in boxes)
     total_h += gap * (len(boxes) - 1)
-    y = max(int(SH * 0.14), (SH - total_h) // 3)
+    if zone == "bottom":
+        # blok w DOLNEJ POŁOWIE, z marginesem od dołu; nigdy powyżej środka kadru
+        bottom_margin = int(SH * 0.12)
+        y = SH - total_h - bottom_margin
+        y = max(int(SH * 0.5), y)
+        # gdyby blok był ekstremalnie wysoki, nie wyjść poza kadr u góry
+        y = max(int(SH * 0.14), min(y, SH - total_h - int(SH * 0.04)))
+    else:
+        # 'full' — środek kadru (zdjęcie neutralne albo brak zdjęcia)
+        y = max(int(SH * 0.14), (SH - total_h) // 2)
 
     for wrapped, f, acc in boxes:
         line_h = int(f.size * line_gap)
@@ -857,11 +875,12 @@ def render_stories(brand, items, out_dir, photos=None):
     photos = photos or []
     paths = []
     for i, it in enumerate(items, start=1):
-        ph, fmt = None, "tip"
+        ph, fmt, zone = None, "tip", None
         if isinstance(it, dict):
             text = it.get("text", "")
             ph = it.get("photo")
             fmt = (it.get("format") or "tip").strip().lower()
+            zone = (it.get("zone") or "").strip().lower() or None
         else:
             text = str(it)
         if ph is None and photos:
@@ -871,11 +890,15 @@ def render_stories(brand, items, out_dir, photos=None):
                 ph = Image.open(ph)
             except Exception:
                 ph = None
+        # domyślna strefa: jest zdjęcie -> 'bottom' (bezpieczne dla twarzy),
+        # brak zdjęcia -> 'full' (tekst na tle brandu może zająć środek)
+        if zone not in ("bottom", "full"):
+            zone = "bottom" if ph is not None else "full"
         if fmt == "native":
             lines = [l for l in str(text).split("\n")]
-            paths.append(render_story_native(brand, ph, lines, out_dir, idx=i))
+            paths.append(render_story_native(brand, ph, lines, out_dir, idx=i, zone=zone))
         else:
-            paths.append(render_story(brand, ph, text, out_dir, idx=i))
+            paths.append(render_story(brand, ph, text, out_dir, idx=i, zone=zone))
     return paths
 
 

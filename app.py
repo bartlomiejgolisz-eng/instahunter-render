@@ -485,10 +485,23 @@ async def render_story_endpoint(
             continue
         mfmt = re.search(r"\[\[FORMAT\]\]\s*([A-Za-z]+)", p)
         fmt = mfmt.group(1).lower() if mfmt else "tip"
+        # strefa tekstu: [[STREFA]] dol|cala. dol = zdjęcie z twarzą (folder A) ->
+        # tekst w dolnej połowie; cala = zdjęcie neutralne (folder B) / bez zdjęcia.
+        mzone = re.search(r"\[\[STREFA\]\]\s*([A-Za-z]+)", p)
+        zraw = mzone.group(1).lower() if mzone else ""
+        if zraw in ("dol", "bottom"):
+            zone = "bottom"
+        elif zraw in ("cala", "full"):
+            zone = "full"
+        else:
+            zone = None
         mtxt = re.search(r"\[\[TEKST\]\](.*?)(?:\[\[END\]\]|$)", p, re.DOTALL)
         text = (mtxt.group(1) if mtxt else "").strip()
         if text:
-            items.append({"text": text, "format": fmt})
+            item = {"text": text, "format": fmt}
+            if zone:
+                item["zone"] = zone
+            items.append(item)
     if not items:
         raise HTTPException(status_code=422, detail="no stories parsed from body")
 
