@@ -814,9 +814,10 @@ def _draw_pill(base, x, y, text, font, fill, text_col, pad_x=44, pad_y=24):
 
 
 def _story_progress(base, brand, idx, total, y=54):
-    """Segmentowy pasek postępu u góry (jak w stories) — element brandowy Formatu 1."""
-    if total < 2:
-        return
+    """Pasek postępu USUNIĘTY (decyzja s85, 2026-07-24): brak paska na górze stories.
+    Zostawione jako no-op dla zgodności wywołań."""
+    return
+    # --- kod paska wyłączony (zostawiony na wypadek przywrócenia) ---
     accent, white = hex2rgb(brand.accent), (255, 255, 255)
     d = ImageDraw.Draw(base, "RGBA")
     m, gap, h = 84, 12, 7
@@ -845,7 +846,7 @@ def render_story(brand, photo, text, out_dir, idx=1, zone="bottom", total=4,
     margin = 88
     max_w = SW - 2 * margin
 
-    _story_progress(base, brand, idx, total)
+    # _story_progress(base, brand, idx, total)  # USUNIĘTY s85 — bez paska postępu na górze
 
     raw = [l.strip() for l in str(text or "").split("\n") if l.strip()]
     # Ostatnia linia w gwiazdkach (*...*) = koralowy GUZIK CTA (jak w referencji Formatu 2).
