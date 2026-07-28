@@ -90,6 +90,7 @@ _FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
 # Nazwa (z brandbooka) wskazuje krój wiodący; body dobrany tak, by ładnie pasował.
 FONT_PAIRINGS = {
     "space grotesk": {"head": "SpaceGrotesk-Bold.ttf", "body": "Lato-Regular.ttf"},
+    "montserrat":    {"head": "Montserrat-Bold.ttf",    "body": "Montserrat-Regular.ttf"},
     "lato":          {"head": "Lato-Bold.ttf",         "body": "Carlito-Regular.ttf"},
     "carlito":       {"head": "Carlito-Bold.ttf",      "body": "Lato-Regular.ttf"},
     "caladea":       {"head": "Caladea-Bold.ttf",      "body": "Lato-Regular.ttf"},  # serif + sans
@@ -98,7 +99,7 @@ FONT_PAIRINGS = {
 # Aliasy nazw z brandbooków -> najbliższy metrycznie krój wiodący w bibliotece.
 FONT_ALIASES = {
     "grotesk": "space grotesk", "spacegrotesk": "space grotesk", "space-grotesk": "space grotesk",
-    "poppins": "space grotesk", "montserrat": "space grotesk", "geometric": "space grotesk",
+    "poppins": "space grotesk", "montserrat": "montserrat", "geometric": "space grotesk",
     "lato": "lato", "opensans": "lato", "open sans": "lato", "sans": "lato", "roboto": "lato",
     "calibri": "carlito", "carlito": "carlito",
     "cambria": "caladea", "caladea": "caladea", "georgia": "caladea", "times": "caladea",
@@ -186,6 +187,40 @@ def hex2rgb(h):
 
 def _mix(c, other, t):
     return tuple(int(a * (1 - t) + b * t) for a, b in zip(c, other))
+
+
+# Scrim okładki fotograficznej — ZAWSZE CIEMNY, niezależny od koloru tła marki.
+# (jasne brandy: tekst okładki jest biały, więc scrim nie może być beżowy/jasny).
+COVER_SCRIM_RGB = (14, 13, 11)
+
+
+def _luma(rgb):
+    r, g, b = rgb
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+
+
+def _is_light_bg(brand):
+    """Czy tlo marki jest jasne (jasny brandbook, np. kremowe tlo)?"""
+    try:
+        return _luma(hex2rgb(brand.bg)) > 0.6
+    except Exception:
+        return False
+
+
+def _ink_on_bg(brand):
+    """Tekst GLOWNY na tle marki (auto-kontrast): jasne tlo -> ciemny atrament,
+    ciemne tlo -> biel (dotychczasowe zachowanie, zero regresji na ciemnych)."""
+    if _is_light_bg(brand):
+        return (24, 22, 18)
+    return hex2rgb(brand.white)
+
+
+def _sec_on_bg(brand):
+    """Tekst POMOCNICZY na tle marki (auto-kontrast): jasne tlo -> przyciemniony
+    taupe (czytelny), ciemne tlo -> taupe jak dotad."""
+    if _is_light_bg(brand):
+        return _mix((24, 22, 18), hex2rgb(brand.taupe), 0.42)
+    return hex2rgb(brand.taupe)
 
 
 def _parse_rich(text):
@@ -291,6 +326,7 @@ def _accent_bar(base, brand):
 def _ornaments(base, brand, strong=False):
     """Geometryczne kółka (tech/AI) — widoczne, ale eleganckie (dwa koncentryczne).
     strong=True (okładka na zdjęciu) = wyraźniejsze, żeby nie zlały się z fotografią."""
+    return  # kółka ozdobne USUNIĘTE (Bartek, s100): żadnych zdobień na karuzelach
     if not brand.ornaments:
         return
     layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
@@ -331,7 +367,7 @@ def _top_scrim(base, brand, frac=0.22):
         t = max(0.0, 1.0 - y / (H * frac))
         grad.putpixel((0, y), int(238 * (t ** 1.25)))
     grad = grad.resize((W, H))
-    solid = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
+    solid = Image.new("RGBA", (W, H), COVER_SCRIM_RGB + (255,))
     solid.putalpha(grad)
     base.alpha_composite(solid)
 
@@ -368,9 +404,10 @@ def _header(base, brand, idx, total, shadow=False):
         sd.text((px + 1, 62), pg, font=pf, fill=(0, 0, 0, 210))
         base.alpha_composite(sh.filter(ImageFilter.GaussianBlur(4)))
     d = ImageDraw.Draw(base)
-    handle_col = hex2rgb(brand.white) if shadow else hex2rgb(brand.taupe)
+    handle_col = hex2rgb(brand.white) if shadow else _sec_on_bg(brand)
     d.text((MARGIN, 60), brand.handle, font=hf, fill=handle_col)
-    d.text((px, 60), pg, font=pf, fill=hex2rgb(brand.accent))
+    pg_col = hex2rgb(brand.white) if shadow else hex2rgb(brand.accent)
+    d.text((px, 60), pg, font=pf, fill=pg_col)
 
 
 def _progress(base, brand, idx, total):
@@ -386,7 +423,7 @@ def _progress(base, brand, idx, total):
         if i == idx - 1:
             col = hex2rgb(brand.accent)
         else:
-            col = _mix(hex2rgb(brand.bg), hex2rgb(brand.taupe), 0.45)
+            col = _mix(hex2rgb(brand.bg), _ink_on_bg(brand), 0.32)
         d.rounded_rectangle([x0, y, x0 + seg, y + 6], radius=3, fill=col)
 
 
@@ -490,7 +527,7 @@ def _bottom_scrim(base, brand, frac=0.62):
         t = max(0.0, (y - H * (1 - frac)) / (H * frac))
         grad.putpixel((0, y), int(255 * min(1.0, t ** 1.5)))
     grad = grad.resize((W, H))
-    solid = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
+    solid = Image.new("RGBA", (W, H), COVER_SCRIM_RGB + (255,))
     solid.putalpha(grad)
     base.alpha_composite(solid)
 
@@ -516,25 +553,45 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
     _ornaments(base, brand, strong=on_photo)
     _header(base, brand, idx, total, shadow=on_photo)
     d = ImageDraw.Draw(base)
-    white, accent, taupe = hex2rgb(brand.white), hex2rgb(brand.accent), hex2rgb(brand.taupe)
+    white, accent, taupe = _ink_on_bg(brand), hex2rgb(brand.accent), _sec_on_bg(brand)
 
     if on_photo:
-        # HOOK: duży i wyraźny (na 1. slajdzie ma być najmocniejszy)
+        white = hex2rgb(brand.white)  # na ciemnym scrim okładki tekst ZAWSZE biały
+        # HOOK: cały biały (akcentowane słowa też białe — wyróżnienie wielkością, nie kolorem).
+        # Kolor marki NIE jest zmieniany: wraca jako WYPEŁNIONY chip podtytułu (biały tekst na
+        # akcencie = czytelny dla KAŻDEGO koloru marki, także ciemnego jak granat).
         tf, tl, _ = _fit_rich(d, title, brand.font_heavy, 104, 74, 3)
         lh = int(tf.size * 1.06)
-        sf, sl = None, None
-        if subtitle:
-            sf, sl, _ = _fit_rich(d, subtitle, brand.font_heavy, 68, 48, 2)
-        block_h = lh * len(tl) + (int(sf.size * 1.12) * len(sl) + 18 if subtitle else 0)
         _ss = getattr(brand, "shadow_strength", 1.0)
-        y = H - 165 - block_h - int(title_shift or 0)
-        y = max(120, y)
-        y = _draw_rich(base, MARGIN, y, tl, tf, white, accent, lh, shadow=True, shadow_strength=_ss)
+        cf = None
+        chip_h = 0
+        sub_txt = ""
         if subtitle:
-            _draw_rich(base, MARGIN, y + 18,
-                       [[(w, True) for w, _ in ln] for ln in sl], sf, white, accent,
-                       int(sf.size * 1.12), shadow=True, shadow_strength=_ss)
+            sub_txt = " ".join(w for w, _ in _parse_rich(subtitle))  # bez znaczników *akcentu*
+            cf, _sl, _ = _fit_rich(d, sub_txt, brand.font_bold, 68, 44, 1,
+                                   max_w=W - 2 * MARGIN - 2 * 40)
+            chip_h = int(cf.size) + 2 * 22
+        block_h = lh * len(tl) + (34 + chip_h if subtitle else 0)
+        y = H - 158 - block_h - int(title_shift or 0)
+        y = max(120, y)
+        y = _draw_rich(base, MARGIN, y, tl, tf, white, white, lh, shadow=True, shadow_strength=_ss)
+        if subtitle and cf is not None:
+            cy = y + 34
+            pad_x = 40
+            tw = ImageDraw.Draw(base).textlength(sub_txt, font=cf)
+            cw = int(tw) + 2 * pad_x
+            # miękki cień pod chipem — lekko unosi go znad zdjęcia
+            sh = Image.new("RGBA", base.size, (0, 0, 0, 0))
+            ImageDraw.Draw(sh).rounded_rectangle(
+                [MARGIN, cy, MARGIN + cw, cy + chip_h], radius=chip_h // 2, fill=(0, 0, 0, 150))
+            base.alpha_composite(sh.filter(ImageFilter.GaussianBlur(12)))
+            dc = ImageDraw.Draw(base)
+            dc.rounded_rectangle([MARGIN, cy, MARGIN + cw, cy + chip_h],
+                                 radius=chip_h // 2, fill=hex2rgb(brand.accent))
+            dc.text((MARGIN + pad_x, cy + 22 - int(cf.size * 0.06)), sub_txt,
+                    font=cf, fill=hex2rgb(brand.white))
     else:
+        ink, sec = _ink_on_bg(brand), _sec_on_bg(brand)
         y = 235
         if count is not None:
             y = _count_badge(base, brand, count, y=y) + 120
@@ -542,15 +599,15 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
             y = 430
         tf, tl, _ = _fit_rich(d, title, brand.font_heavy, 96, 60, 3)
         lh = int(tf.size * 1.06)
-        y = _draw_rich(base, MARGIN, y, tl, tf, white, accent, lh)
+        y = _draw_rich(base, MARGIN, y, tl, tf, ink, accent, lh)
         if subtitle:
             sf, sl, _ = _fit_rich(d, subtitle, brand.font_heavy, 76, 48, 3)
             slh = int(sf.size * 1.1)
             y = _draw_rich(base, MARGIN, y + 26,
-                           [[(w, True) for w, _ in ln] for ln in sl], sf, white, accent, slh)
+                           [[(w, True) for w, _ in ln] for ln in sl], sf, ink, accent, slh)
         if tagline:
             gf, gl, _ = _fit_rich(d, tagline, brand.font_med, 42, 32, 2)
-            _draw_rich(base, MARGIN, y + 44, gl, gf, taupe, accent, int(gf.size * 1.28))
+            _draw_rich(base, MARGIN, y + 44, gl, gf, sec, accent, int(gf.size * 1.28))
     _progress(base, brand, idx, total)
     return base.convert("RGB")
 
@@ -566,7 +623,7 @@ def render_content(brand, number, heading, body, idx, total, avatar=None, kicker
     _header(base, brand, idx, total)
     _avatar(base, brand, avatar, W - MARGIN - 66, 205, 66)
     d = ImageDraw.Draw(base)
-    white, accent, taupe = hex2rgb(brand.white), hex2rgb(brand.accent), hex2rgb(brand.taupe)
+    white, accent, taupe = _ink_on_bg(brand), hex2rgb(brand.accent), _sec_on_bg(brand)
 
     if kicker:
         _kicker(base, brand, MARGIN, 360, kicker)
@@ -603,7 +660,7 @@ def render_list(brand, number, heading, items, idx, total, avatar=None, kicker=N
     _header(base, brand, idx, total)
     _avatar(base, brand, avatar, W - MARGIN - 66, 205, 66)
     d = ImageDraw.Draw(base)
-    white, accent, taupe = hex2rgb(brand.white), hex2rgb(brand.accent), hex2rgb(brand.taupe)
+    white, accent, taupe = _ink_on_bg(brand), hex2rgb(brand.accent), _sec_on_bg(brand)
 
     hy = 300
     if kicker:
@@ -657,7 +714,7 @@ def render_stat(brand, kicker, figure, label, body, idx, total, avatar=None):
     _header(base, brand, idx, total)
     _avatar(base, brand, avatar, W - MARGIN - 66, 205, 66)
     d = ImageDraw.Draw(base)
-    white, accent, taupe = hex2rgb(brand.white), hex2rgb(brand.accent), hex2rgb(brand.taupe)
+    white, accent, taupe = _ink_on_bg(brand), hex2rgb(brand.accent), _sec_on_bg(brand)
 
     y = _kicker(base, brand, MARGIN, 360, kicker) if kicker else 360
     # wielka liczba
@@ -685,7 +742,7 @@ def render_chart(brand, kicker, heading, bars, idx, total, avatar=None):
     _header(base, brand, idx, total)
     _avatar(base, brand, avatar, W - MARGIN - 66, 205, 66)
     d = ImageDraw.Draw(base)
-    white, accent, taupe = hex2rgb(brand.white), hex2rgb(brand.accent), hex2rgb(brand.taupe)
+    white, accent, taupe = _ink_on_bg(brand), hex2rgb(brand.accent), _sec_on_bg(brand)
 
     y = _kicker(base, brand, MARGIN, 300, kicker) + 4 if kicker else 300
     hf, hl, _ = _fit_rich(d, heading, brand.font_heavy, 64, 44, 2)
@@ -704,12 +761,12 @@ def render_chart(brand, kicker, heading, bars, idx, total, avatar=None):
         label, val = item[0], max(0, min(100, item[1]))
         hi = item[2] if len(item) > 2 else False
         by = int(top + i * rowh)
-        d.text((MARGIN, by), label, font=lf, fill=hex2rgb(brand.white))
+        d.text((MARGIN, by), label, font=lf, fill=white)
         track_y = by + 52
         d.rounded_rectangle([MARGIN, track_y, MARGIN + bar_w, track_y + 26], radius=13,
-                            fill=_mix(hex2rgb(brand.bg), hex2rgb(brand.taupe), 0.3))
+                            fill=_mix(hex2rgb(brand.bg), _ink_on_bg(brand), 0.22))
         fillw = int(bar_w * val / 100)
-        col = accent if hi else _mix(hex2rgb(brand.taupe), hex2rgb(brand.white), 0.15)
+        col = accent if hi else _sec_on_bg(brand)
         if fillw > 26:
             d.rounded_rectangle([MARGIN, track_y, MARGIN + fillw, track_y + 26], radius=13,
                                 fill=col)
@@ -730,7 +787,7 @@ def render_cta(brand, heading, body, cta, idx, total, photo=None):
         _ornaments(base, brand)
     _header(base, brand, idx, total)
     d = ImageDraw.Draw(base)
-    white, accent, taupe = hex2rgb(brand.white), hex2rgb(brand.accent), hex2rgb(brand.taupe)
+    white, accent, taupe = _ink_on_bg(brand), hex2rgb(brand.accent), _sec_on_bg(brand)
 
     card = [MARGIN - 12, 250, W - MARGIN + 12, 950]
     d.rounded_rectangle(card, radius=42, outline=accent, width=3)
