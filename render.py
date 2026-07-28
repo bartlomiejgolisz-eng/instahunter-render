@@ -19,10 +19,19 @@ Font produkcyjny: Space Grotesk (bundlowany w fonts/).
 
 from __future__ import annotations
 import os
+import dataclasses
+import threading
 from dataclasses import dataclass
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps, ImageEnhance
 
 W, H = 1080, 1350  # kanwa 4:5 Instagram
+
+# kontekst renderu per-wątek (globalny mnożnik rozmiaru tekstu)
+_ctx = threading.local()
+
+
+def _ts():
+    return getattr(_ctx, "text_scale", 1.0)
 MARGIN = 84        # lewy/prawy margines treści
 BAR = 12           # szerokość paska akcentu z lewej
 
@@ -123,6 +132,18 @@ class Brand:
     handle: str = "@bartekaihunter"
     glow: bool = False           # zostawione dla zgodności API; render jest CZYSTY (bez poświaty)
     ornaments: bool = True       # cienkie geometryczne kółka
+    # --- POKRĘTŁA WYGLĄDU (s98) — domyślne = dotychczasowy wygląd (zero regresji) ---
+    accent_bar: bool = True         # pasek akcentu z lewej krawędzi
+    bar_w: int = BAR                # grubość paska akcentu
+    vignette: bool = True           # przyciemnienie rogów (winieta)
+    vignette_strength: float = 1.0  # mnożnik siły winiety
+    progress: bool = True           # pasek postępu (kropki u dołu) — karuzele
+    shadow_strength: float = 1.0    # mnożnik cienia/aury pod tekstem
+    text_scale: float = 1.0         # globalny mnożnik rozmiaru tekstu
+    cover_scrim: float = 1.0        # mnożnik przyciemnienia zdjęcia okładki (karuzela)
+    story_scrim: float = 1.0        # mnożnik przyciemnienia zdjęcia (stories)
+    photo_blur: float = 0.0         # rozmycie (blur) zdjęcia w tle, px
+    avatar_on: bool = True          # awatar na slajdach treści
     font_heavy: str = FONT_HEAVY
     font_bold: str = FONT_BOLD
     font_med: str = FONT_MED
@@ -137,6 +158,22 @@ class Brand:
         self.font_bold = fam["head"]
         self.font_med = fam["head"]
         self.font_body = fam["body"]
+
+
+_BRAND_FIELDS = {f.name for f in dataclasses.fields(Brand)}
+
+
+def _apply_look(brand, look):
+    """Brand z nałożonymi overridami wyglądu per-slajd (tylko pola Brand)."""
+    if not look:
+        return brand
+    over = {k: v for k, v in look.items() if k in _BRAND_FIELDS}
+    if not over:
+        return brand
+    try:
+        return dataclasses.replace(brand, **over)
+    except Exception:
+        return brand
 
 
 # ---------- KOLORY / TEKST ----------
@@ -196,6 +233,12 @@ def _fit_rich(draw, text, font_path, size_hi, size_lo, max_lines, max_w=None, st
     """Największy rozmiar, przy którym tekst mieści się w max_lines i szerokości."""
     if max_w is None:
         max_w = W - MARGIN - MARGIN
+    _sc = _ts()
+    if _sc and _sc != 1.0:
+        size_hi = max(8, int(round(size_hi * _sc)))
+        size_lo = max(8, int(round(size_lo * _sc)))
+        if size_hi < size_lo:
+            size_hi = size_lo
     words = _parse_rich(text)
     size = size_lo
     lines = _wrap_rich(draw, words, _f(font_path, size_lo), max_w)
@@ -207,22 +250,24 @@ def _fit_rich(draw, text, font_path, size_hi, size_lo, max_lines, max_w=None, st
     return _f(font_path, size_lo), lines, size_lo
 
 
-def _draw_rich(base, x, y, lines, font, white, accent, line_h, shadow=False):
+def _draw_rich(base, x, y, lines, font, white, accent, line_h, shadow=False, shadow_strength=1.0):
     """Rysuje wielolinijkowy tekst z akcentem per-słowo. Czysto (bez poświaty).
     shadow=True dodaje delikatny cień pod tekst (tylko okładka na zdjęciu)."""
     d = ImageDraw.Draw(base)
     space = d.textlength(" ", font=font)
-    if shadow:
+    if shadow and shadow_strength > 0:
+        _sa = max(0, min(255, int(170 * shadow_strength)))
+        _sb = max(1, int(round(5 * min(2.0, shadow_strength))))
         sh = Image.new("RGBA", base.size, (0, 0, 0, 0))
         sd = ImageDraw.Draw(sh)
         yy = y
         for line in lines:
             xx = x
             for w, _ in line:
-                sd.text((xx + 2, yy + 3), w, font=font, fill=(0, 0, 0, 170))
+                sd.text((xx + 2, yy + 3), w, font=font, fill=(0, 0, 0, _sa))
                 xx += sd.textlength(w, font=font) + space
             yy += line_h
-        sh = sh.filter(ImageFilter.GaussianBlur(5))
+        sh = sh.filter(ImageFilter.GaussianBlur(_sb))
         base.alpha_composite(sh)
     d = ImageDraw.Draw(base)
     yy = y
@@ -237,7 +282,10 @@ def _draw_rich(base, x, y, lines, font, white, accent, line_h, shadow=False):
 
 # ---------- ELEMENTY STAŁE ----------
 def _accent_bar(base, brand):
-    ImageDraw.Draw(base).rectangle([0, 0, BAR, H], fill=hex2rgb(brand.accent))
+    if not getattr(brand, "accent_bar", True):
+        return
+    bw = getattr(brand, "bar_w", BAR)
+    ImageDraw.Draw(base).rectangle([0, 0, bw, H], fill=hex2rgb(brand.accent))
 
 
 def _ornaments(base, brand, strong=False):
@@ -264,12 +312,15 @@ def _ornaments(base, brand, strong=False):
 
 def _vignette(base, brand):
     """Subtelna głębia: delikatne przyciemnienie krawędzi (premium)."""
+    if not getattr(brand, "vignette", True):
+        return
+    st = getattr(brand, "vignette_strength", 1.0)
     v = Image.new("L", (W, H), 0)
     dv = ImageDraw.Draw(v)
     dv.ellipse([-W // 3, -H // 4, W + W // 3, H + H // 4], fill=60)
     v = v.filter(ImageFilter.GaussianBlur(160))
     dark = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    dark.putalpha(ImageOps.invert(v).point(lambda p: int(p * 0.28)))
+    dark.putalpha(ImageOps.invert(v).point(lambda p: int(p * 0.28 * st)))
     base.alpha_composite(dark)
 
 
@@ -323,6 +374,8 @@ def _header(base, brand, idx, total, shadow=False):
 
 
 def _progress(base, brand, idx, total):
+    if not getattr(brand, "progress", True):
+        return
     d = ImageDraw.Draw(base)
     y = H - 66
     left, right = MARGIN, W - MARGIN
@@ -443,16 +496,20 @@ def _bottom_scrim(base, brand, frac=0.62):
 
 
 # ---------- SLAJDY ----------
-def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=None):
+def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=None, title_shift=0):
     """Okładka. Ze zdjęciem = pełnoklatkowe foto+scrim; bez = tekstowa z badge liczby."""
     base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
     on_photo = photo is not None
     if on_photo:
         ph = _cover_crop(_warm_grade(photo.convert("RGB")), W, H)
+        _pb = getattr(brand, "photo_blur", 0.0)
+        if _pb and _pb > 0:
+            ph = ph.filter(ImageFilter.GaussianBlur(_pb))
         base.paste(ph, (0, 0))
         base = base.convert("RGBA")
-        _bottom_scrim(base, brand, frac=0.72)
-        _top_scrim(base, brand, frac=0.28)   # czytelność górnego paska na dowolnym zdjęciu
+        _cs = getattr(brand, "cover_scrim", 1.0)
+        _bottom_scrim(base, brand, frac=min(0.95, 0.72 * _cs))
+        _top_scrim(base, brand, frac=min(0.6, 0.28 * _cs))   # czytelność górnego paska
     else:
         _vignette(base, brand)
     _accent_bar(base, brand)
@@ -469,12 +526,14 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
         if subtitle:
             sf, sl, _ = _fit_rich(d, subtitle, brand.font_heavy, 68, 48, 2)
         block_h = lh * len(tl) + (int(sf.size * 1.12) * len(sl) + 18 if subtitle else 0)
-        y = H - 165 - block_h
-        y = _draw_rich(base, MARGIN, y, tl, tf, white, accent, lh, shadow=True)
+        _ss = getattr(brand, "shadow_strength", 1.0)
+        y = H - 165 - block_h - int(title_shift or 0)
+        y = max(120, y)
+        y = _draw_rich(base, MARGIN, y, tl, tf, white, accent, lh, shadow=True, shadow_strength=_ss)
         if subtitle:
             _draw_rich(base, MARGIN, y + 18,
                        [[(w, True) for w, _ in ln] for ln in sl], sf, white, accent,
-                       int(sf.size * 1.12), shadow=True)
+                       int(sf.size * 1.12), shadow=True, shadow_strength=_ss)
     else:
         y = 235
         if count is not None:
@@ -737,31 +796,40 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None):
     if avatar is not None:
         av = Image.open(avatar) if isinstance(avatar, str) else avatar
     for i, s in enumerate(slides, start=1):
+        look = s.get("look") or {}
+        eff = _apply_look(brand, look)
+        _ctx.text_scale = getattr(eff, "text_scale", 1.0)
+        av_use = av if getattr(eff, "avatar_on", True) else None
+        try:
+            tshift = int(look.get("title_shift", 0) or 0)
+        except (TypeError, ValueError):
+            tshift = 0
         t = s.get("type")
         if t == "cover":
-            img = render_cover(brand, s.get("title", ""), s.get("subtitle", ""),
+            img = render_cover(eff, s.get("title", ""), s.get("subtitle", ""),
                                s.get("tagline", ""), i, total,
-                               count=s.get("count"), photo=cover_photo)
+                               count=s.get("count"), photo=cover_photo, title_shift=tshift)
         elif t == "cta":
-            img = render_cta(brand, s.get("heading", ""), s.get("body", ""),
+            img = render_cta(eff, s.get("heading", ""), s.get("body", ""),
                              s.get("cta", ""), i, total, photo=cover_photo)
         elif t == "list":
-            img = render_list(brand, s.get("number"), s.get("heading", ""),
-                              s.get("items", []), i, total, avatar=av,
+            img = render_list(eff, s.get("number"), s.get("heading", ""),
+                              s.get("items", []), i, total, avatar=av_use,
                               kicker=s.get("kicker"))
         elif t == "stat":
-            img = render_stat(brand, s.get("kicker"), s.get("figure", ""),
-                              s.get("label", ""), s.get("body", ""), i, total, avatar=av)
+            img = render_stat(eff, s.get("kicker"), s.get("figure", ""),
+                              s.get("label", ""), s.get("body", ""), i, total, avatar=av_use)
         elif t == "chart":
-            img = render_chart(brand, s.get("kicker"), s.get("heading", ""),
-                               s.get("bars", []), i, total, avatar=av)
+            img = render_chart(eff, s.get("kicker"), s.get("heading", ""),
+                               s.get("bars", []), i, total, avatar=av_use)
         else:
-            img = render_content(brand, s.get("number"), s.get("heading", ""),
-                                 s.get("body", ""), i, total, avatar=av,
+            img = render_content(eff, s.get("number"), s.get("heading", ""),
+                                 s.get("body", ""), i, total, avatar=av_use,
                                  kicker=s.get("kicker"))
         fp = os.path.join(out_dir, f"slide_{i:02d}.png")
         img.save(fp, "PNG")
         paths.append(fp)
+    _ctx.text_scale = 1.0
     return paths
 
 
@@ -837,10 +905,15 @@ def render_story(brand, photo, text, out_dir, idx=1, zone="bottom", total=4,
     (to nie karuzela). Tekst z \\n: 1. linia = statement, reszta = dopowiedzenie."""
     base = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
     if photo is not None:
-        base.paste(_warm_grade(_story_crop(photo)), (0, 0))
+        _spc = _warm_grade(_story_crop(photo))
+        _pb = getattr(brand, "photo_blur", 0.0)
+        if _pb and _pb > 0:
+            _spc = _spc.filter(ImageFilter.GaussianBlur(_pb))
+        base.paste(_spc, (0, 0))
         base = base.convert("RGBA")
-        _story_scrim(base, brand, frac=0.62, strength=1.0)
-        _story_scrim_top(base, brand, frac=0.18, strength=0.6)
+        _ss2 = getattr(brand, "story_scrim", 1.0)
+        _story_scrim(base, brand, frac=0.62, strength=min(1.0, 1.0 * _ss2))
+        _story_scrim_top(base, brand, frac=0.18, strength=min(1.0, 0.6 * _ss2))
     d = ImageDraw.Draw(base)
     white, accent = hex2rgb(brand.white), hex2rgb(brand.accent)
     margin = 88
@@ -875,11 +948,12 @@ def render_story(brand, photo, text, out_dir, idx=1, zone="bottom", total=4,
     y = int(SH * 0.80) - total_h
     y = max(int(SH * 0.44), y)
     x = margin
-    _draw_rich(base, x, y, sl, sf, white, accent, slh, shadow=True)
+    _sst = getattr(brand, "shadow_strength", 1.0)
+    _draw_rich(base, x, y, sl, sf, white, accent, slh, shadow=True, shadow_strength=_sst)
     y += s_h
     if body:
         y += gap_body
-        _draw_rich(base, x, y, bl, bf, white, accent, int(bf.size * 1.34), shadow=True)
+        _draw_rich(base, x, y, bl, bf, white, accent, int(bf.size * 1.34), shadow=True, shadow_strength=_sst)
         y += b_h
     if cta:
         y += gap_cta
@@ -907,6 +981,12 @@ def _wrap_plain(d, text, font, max_w):
 
 
 def _fit_plain(d, text, path, hi, lo, max_lines, max_w):
+    _sc = _ts()
+    if _sc and _sc != 1.0:
+        hi = max(8, int(round(hi * _sc)))
+        lo = max(8, int(round(lo * _sc)))
+        if hi < lo:
+            hi = lo
     for s in range(hi, lo - 1, -3):
         f = _f(path, s)
         w = _wrap_plain(d, text, f, max_w)
@@ -959,17 +1039,22 @@ def render_story_native(brand, photo, lines, out_dir, idx=1, zone="bottom", layo
     base = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
     has_photo = photo is not None
     if has_photo:
-        base.paste(_story_crop(photo), (0, 0))
+        _npc = _story_crop(photo)
+        _pb = getattr(brand, "photo_blur", 0.0)
+        if _pb and _pb > 0:
+            _npc = _npc.filter(ImageFilter.GaussianBlur(_pb))
+        base.paste(_npc, (0, 0))
         base = base.convert("RGBA")
     top_anchor = (zone == "full")
+    _ss3 = getattr(brand, "story_scrim", 1.0)
     if has_photo:
         if top_anchor:
-            _story_scrim_top(base, brand, frac=0.66, strength=0.9)
-            _story_scrim(base, brand, frac=0.30, strength=0.45)
+            _story_scrim_top(base, brand, frac=0.66, strength=min(1.0, 0.9 * _ss3))
+            _story_scrim(base, brand, frac=0.30, strength=min(1.0, 0.45 * _ss3))
         else:
-            _story_scrim(base, brand, frac=0.70, strength=0.95)
+            _story_scrim(base, brand, frac=0.70, strength=min(1.0, 0.95 * _ss3))
     else:
-        _story_scrim(base, brand, frac=1.0, strength=0.5)
+        _story_scrim(base, brand, frac=1.0, strength=min(1.0, 0.5 * _ss3))
     d = ImageDraw.Draw(base)
     white, accent, ink = hex2rgb(brand.white), hex2rgb(brand.accent), (22, 20, 17)
     margin = 76
@@ -1090,13 +1175,17 @@ def render_stories(brand, items, out_dir, photos=None, seed=None):
     paths = []
     for i, it in enumerate(items, start=1):
         ph, fmt, zone = None, "tip", None
+        look = None
         if isinstance(it, dict):
             text = it.get("text", "")
             ph = it.get("photo")
             fmt = (it.get("format") or "tip").strip().lower()
             zone = (it.get("zone") or "").strip().lower() or None
+            look = it.get("look")
         else:
             text = str(it)
+        eff = _apply_look(brand, look or {})
+        _ctx.text_scale = getattr(eff, "text_scale", 1.0)
         if ph is None and photos:
             ph = photos[(i - 1) % len(photos)]
         if isinstance(ph, str):
@@ -1110,9 +1199,10 @@ def render_stories(brand, items, out_dir, photos=None, seed=None):
             zone = "bottom" if ph is not None else "full"
         if fmt == "native":
             lines = [l for l in str(text).split("\n")]
-            paths.append(render_story_native(brand, ph, lines, out_dir, idx=i, zone=zone, seed=seed))
+            paths.append(render_story_native(eff, ph, lines, out_dir, idx=i, zone=zone, seed=seed))
         else:
-            paths.append(render_story(brand, ph, text, out_dir, idx=i, zone=zone))
+            paths.append(render_story(eff, ph, text, out_dir, idx=i, zone=zone))
+    _ctx.text_scale = 1.0
     return paths
 
 

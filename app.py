@@ -416,6 +416,31 @@ def _hex_or(default: str, v: str):
     return v if v.startswith("#") else "#" + v
 
 
+def _parse_look(s: str):
+    """JSON pokręteł wyglądu -> {'global': {...}, 'slides': {'1': {...}}}.
+    Odporne na pusty/uszkodzony wkład (zwraca {})."""
+    s = (s or "").strip()
+    if not s:
+        return {}
+    try:
+        d = json.loads(s)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _attach_slide_looks(items, per):
+    """Dokleja override 'look' do slajdów/story wg 1-based indeksu (klucz str lub int)."""
+    if not per or not isinstance(per, dict):
+        return
+    for i, it in enumerate(items, start=1):
+        ov = per.get(str(i))
+        if ov is None:
+            ov = per.get(i)
+        if isinstance(ov, dict) and ov:
+            it["look"] = {**(it.get("look") or {}), **ov}
+
+
 @app.post("/render_tokens")
 async def render_tokens_endpoint(
     request: Request,
@@ -425,6 +450,7 @@ async def render_tokens_endpoint(
     font: str = "",
     photo: List[str] = Query(default=[]),
     avatar: str = "",
+    look: str = "",
     job_id: Optional[str] = None,
 ):
     if x_api_key != API_KEY:
@@ -452,6 +478,11 @@ async def render_tokens_endpoint(
             photos.append(img)
     avatar_img = _download(avatar) if avatar.strip() else None
 
+    look_cfg = _parse_look(look)
+    if look_cfg.get("global"):
+        brand = R._apply_look(brand, look_cfg["global"])
+    _attach_slide_looks(slides, look_cfg.get("slides"))
+
     paths = R.render_carousel(brand, slides, out_dir, photos=photos or None, avatar=avatar_img)
     urls = [f"{BASE_URL}/static/{job}/{os.path.basename(p)}" for p in paths]
     title = next((s.get("title", "") for s in slides if s.get("type") == "cover"), "")
@@ -470,6 +501,7 @@ async def render_story_endpoint(
     bg: str = "", accent: str = "", taupe: str = "", white: str = "", handle: str = "",
     font: str = "",
     photo: List[str] = Query(default=[]),
+    look: str = "",
     job_id: Optional[str] = None,
 ):
     """Render stories 1080x1920 z tekstów (surowy body, bloki [[STORY]]) + rotacja zdjęć.
@@ -521,6 +553,12 @@ async def render_story_endpoint(
         img = _download(u)
         if img is not None:
             photos.append(img)
+
+    look_cfg = _parse_look(look)
+    if look_cfg.get("global"):
+        brand = R._apply_look(brand, look_cfg["global"])
+    _attach_slide_looks(items, look_cfg.get("slides"))
+
     paths = R.render_stories(brand, items, out_dir, photos=photos or None)
     urls = [f"{BASE_URL}/static/{job}/{os.path.basename(p)}" for p in paths]
     return JSONResponse({"job_id": job, "count": len(urls), "stories": urls,
