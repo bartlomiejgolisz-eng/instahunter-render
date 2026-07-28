@@ -441,6 +441,40 @@ def _attach_slide_looks(items, per):
             it["look"] = {**(it.get("look") or {}), **ov}
 
 
+_LOOK_TOKEN_RE = re.compile(r"\[\[WYGLAD\]\](.*?)\[\[END\]\]", re.DOTALL)
+
+
+def _extract_look_token(raw: str):
+    """Wyłuskuje blok [[WYGLAD]] {json} [[END]] z tokenów Claude -> dict pokręteł ({} gdy brak/uszkodzony)."""
+    m = _LOOK_TOKEN_RE.search(raw or "")
+    if not m:
+        return {}
+    try:
+        d = json.loads(m.group(1).strip())
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _merge_look(a: dict, b: dict):
+    """Scala dwa configi pokręteł (b nadpisuje a): global + slides głęboko."""
+    a = a or {}
+    b = b or {}
+    if not a:
+        return b
+    if not b:
+        return a
+    out = {"global": {**(a.get("global") or {}), **(b.get("global") or {})}}
+    sl = {**(a.get("slides") or {})}
+    for k, v in (b.get("slides") or {}).items():
+        sl[k] = {**(sl.get(k) or {}), **(v or {})}
+    if sl:
+        out["slides"] = sl
+    if not out.get("global"):
+        out.pop("global", None)
+    return out
+
+
 @app.post("/render_tokens")
 async def render_tokens_endpoint(
     request: Request,
@@ -478,7 +512,7 @@ async def render_tokens_endpoint(
             photos.append(img)
     avatar_img = _download(avatar) if avatar.strip() else None
 
-    look_cfg = _parse_look(look)
+    look_cfg = _merge_look(_parse_look(look), _extract_look_token(raw))
     if look_cfg.get("global"):
         brand = R._apply_look(brand, look_cfg["global"])
     _attach_slide_looks(slides, look_cfg.get("slides"))
@@ -554,7 +588,7 @@ async def render_story_endpoint(
         if img is not None:
             photos.append(img)
 
-    look_cfg = _parse_look(look)
+    look_cfg = _merge_look(_parse_look(look), _extract_look_token(raw))
     if look_cfg.get("global"):
         brand = R._apply_look(brand, look_cfg["global"])
     _attach_slide_looks(items, look_cfg.get("slides"))
