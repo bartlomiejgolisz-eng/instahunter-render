@@ -285,9 +285,13 @@ def _fit_rich(draw, text, font_path, size_hi, size_lo, max_lines, max_w=None, st
     return _f(font_path, size_lo), lines, size_lo
 
 
-def _draw_rich(base, x, y, lines, font, white, accent, line_h, shadow=False, shadow_strength=1.0):
+def _draw_rich(base, x, y, lines, font, white, accent, line_h, shadow=False, shadow_strength=1.0,
+               hl_accent=False):
     """Rysuje wielolinijkowy tekst z akcentem per-słowo. Czysto (bez poświaty).
-    shadow=True dodaje delikatny cień pod tekst (tylko okładka na zdjęciu)."""
+    shadow=True dodaje delikatny cień pod tekst (tylko okładka na zdjęciu).
+    hl_accent=True (FIX ciemny akcent na zdjęciu): słowa akcentowane NIE są kolorowane
+    ciemną czcionką, tylko dostają PODŚWIETLENIE (pigułka w kolorze marki + biały tekst)
+    — kolor marki zostaje nietknięty, a słowo jest czytelne na każdym zdjęciu."""
     d = ImageDraw.Draw(base)
     space = d.textlength(" ", font=font)
     if shadow and shadow_strength > 0:
@@ -308,8 +312,35 @@ def _draw_rich(base, x, y, lines, font, white, accent, line_h, shadow=False, sha
     yy = y
     for line in lines:
         xx = x
+        if hl_accent:
+            # najpierw pigułki pod CIĄGŁYMI seriami słów akcentowanych (jedna pigułka na serię)
+            run_x, run_w = None, 0.0
+            cx2 = xx
+            runs = []
+            for w, acc in line:
+                ww = d.textlength(w, font=font)
+                if acc:
+                    if run_x is None:
+                        run_x = cx2
+                    run_w = (cx2 + ww) - run_x
+                else:
+                    if run_x is not None:
+                        runs.append((run_x, run_w))
+                        run_x, run_w = None, 0.0
+                cx2 += ww + space
+            if run_x is not None:
+                runs.append((run_x, run_w))
+            pad = max(10, int(font.size * 0.22))
+            for rx, rw in runs:
+                d.rounded_rectangle(
+                    [rx - pad, yy - int(font.size * 0.08),
+                     rx + rw + pad, yy + int(font.size * 1.16)],
+                    radius=int(font.size * 0.30), fill=accent)
         for w, acc in line:
-            d.text((xx, yy), w, font=font, fill=(accent if acc else white))
+            if hl_accent and acc:
+                d.text((xx, yy), w, font=font, fill=(255, 255, 255))
+            else:
+                d.text((xx, yy), w, font=font, fill=(accent if acc else white))
             xx += d.textlength(w, font=font) + space
         yy += line_h
     return yy
@@ -888,8 +919,11 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None):
                                s.get("tagline", ""), i, total,
                                count=s.get("count"), photo=cover_photo, title_shift=tshift)
         elif t == "cta":
+            # CTA: w kółku ZDJĘCIE PROFILOWE klienta (decyzja Bartka s103); zdjęcie
+            # z okładki tylko awaryjnie, gdy brak profilowego.
             img = render_cta(eff, s.get("heading", ""), s.get("body", ""),
-                             s.get("cta", ""), i, total, photo=cover_photo)
+                             s.get("cta", ""), i, total,
+                             photo=(av if av is not None else cover_photo))
         elif t == "list":
             img = render_list(eff, s.get("number"), s.get("heading", ""),
                               s.get("items", []), i, total, avatar=av_use,
@@ -1027,11 +1061,16 @@ def render_story(brand, photo, text, out_dir, idx=1, zone="bottom", total=4,
     y = max(int(SH * 0.44), y)
     x = margin
     _sst = getattr(brand, "shadow_strength", 1.0)
-    _draw_rich(base, x, y, sl, sf, white, accent, slh, shadow=True, shadow_strength=_sst)
+    # FIX (ciemny akcent marki niewidoczny na zdjęciu ze scrimem): jeśli kolor akcentu
+    # jest ciemny, słowa akcentowane dostają podświetlenie (pigułka akcent + biały tekst).
+    _hl = _luma(accent) < 80
+    _draw_rich(base, x, y, sl, sf, white, accent, slh, shadow=True, shadow_strength=_sst,
+               hl_accent=_hl)
     y += s_h
     if body:
         y += gap_body
-        _draw_rich(base, x, y, bl, bf, white, accent, int(bf.size * 1.34), shadow=True, shadow_strength=_sst)
+        _draw_rich(base, x, y, bl, bf, white, accent, int(bf.size * 1.34), shadow=True,
+                   shadow_strength=_sst, hl_accent=_hl)
         y += b_h
     if cta:
         y += gap_cta
