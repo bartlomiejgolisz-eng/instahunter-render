@@ -566,11 +566,23 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
         cf = None
         chip_h = 0
         sub_txt = ""
+        sub_lines = []
+        chip_lh = 0
         if subtitle:
             sub_txt = " ".join(w for w, _ in _parse_rich(subtitle))  # bez znaczników *akcentu*
-            cf, _sl, _ = _fit_rich(d, sub_txt, brand.font_bold, 68, 44, 1,
-                                   max_w=W - 2 * MARGIN - 2 * 40)
-            chip_h = int(cf.size) + 2 * 22
+            chip_max_w = W - 2 * MARGIN - 2 * 40
+            # FIX (ucięty podtytuł): najpierw próbujemy 1 linii, jak nie wchodzi
+            # nawet przy min. rozmiarze — zawijamy do 2 linii (nigdy nie ucinamy).
+            cf, sub_lines, _ = _fit_rich(d, sub_txt, brand.font_bold, 68, 44, 1,
+                                         max_w=chip_max_w)
+            if len(sub_lines) > 1 or any(_line_w(d, ln, cf) > chip_max_w for ln in sub_lines):
+                cf, sub_lines, _ = _fit_rich(d, sub_txt, brand.font_bold, 52, 34, 2,
+                                             max_w=chip_max_w)
+            if len(sub_lines) == 1:
+                chip_lh = int(cf.size)
+            else:
+                chip_lh = int(cf.size * 1.22)
+            chip_h = chip_lh * len(sub_lines) + 2 * 22
         block_h = lh * len(tl) + (34 + chip_h if subtitle else 0)
         y = H - 158 - block_h - int(title_shift or 0)
         y = max(120, y)
@@ -578,18 +590,23 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
         if subtitle and cf is not None:
             cy = y + 34
             pad_x = 40
-            tw = ImageDraw.Draw(base).textlength(sub_txt, font=cf)
-            cw = int(tw) + 2 * pad_x
+            dmes = ImageDraw.Draw(base)
+            line_txts = [" ".join(w for w, _ in ln) for ln in sub_lines]
+            tw = max(dmes.textlength(t, font=cf) for t in line_txts)
+            cw = min(int(tw) + 2 * pad_x, W - 2 * MARGIN)
+            rad = min(chip_h // 2, 46)
             # miękki cień pod chipem — lekko unosi go znad zdjęcia
             sh = Image.new("RGBA", base.size, (0, 0, 0, 0))
             ImageDraw.Draw(sh).rounded_rectangle(
-                [MARGIN, cy, MARGIN + cw, cy + chip_h], radius=chip_h // 2, fill=(0, 0, 0, 150))
+                [MARGIN, cy, MARGIN + cw, cy + chip_h], radius=rad, fill=(0, 0, 0, 150))
             base.alpha_composite(sh.filter(ImageFilter.GaussianBlur(12)))
             dc = ImageDraw.Draw(base)
             dc.rounded_rectangle([MARGIN, cy, MARGIN + cw, cy + chip_h],
-                                 radius=chip_h // 2, fill=hex2rgb(brand.accent))
-            dc.text((MARGIN + pad_x, cy + 22 - int(cf.size * 0.06)), sub_txt,
-                    font=cf, fill=hex2rgb(brand.white))
+                                 radius=rad, fill=hex2rgb(brand.accent))
+            ty = cy + 22 - int(cf.size * 0.06)
+            for t in line_txts:
+                dc.text((MARGIN + pad_x, ty), t, font=cf, fill=hex2rgb(brand.white))
+                ty += chip_lh
     else:
         ink, sec = _ink_on_bg(brand), _sec_on_bg(brand)
         y = 235
@@ -644,6 +661,7 @@ def render_content(brand, number, heading, body, idx, total, avatar=None, kicker
         blh = int(bf.size * 1.34)
         by = max(hbottom + 120, 900)
         by = min(by, H - 150 - blh * len(bl))
+        by = max(by, hbottom + 60)  # FIX: treść nigdy nie wjeżdża na nagłówek
         _draw_rich(base, MARGIN, by, [[(w, False) for w, _ in ln] for ln in bl],
                    bf, taupe, accent, blh)
     _progress(base, brand, idx, total)
@@ -675,31 +693,34 @@ def render_list(brand, number, heading, items, idx, total, avatar=None, kicker=N
     if not items:
         _progress(base, brand, idx, total)
         return base.convert("RGB")
-    # punkty blisko siebie, wyrównane do góry (elegancko, nie rozstrzelone)
-    itf = _f(brand.font_med, 46)
+    # FIX (napis na napisie): wiersze NIE są już sztywne (rowh=108) — każdy punkt
+    # zajmuje tyle linii, ile realnie potrzebuje, a następny zaczyna się POD nim.
+    # Rozmiar czcionki dobierany tak, żeby całość zmieściła się nad paskiem postępu.
     r = 20
     tx = MARGIN + 2 * r + 30
-    rowh = 108
     top = hy + 66
-    space = d.textlength(" ", font=itf)
     max_w = W - MARGIN - tx
-    for i, it in enumerate(items):
-        cy = int(top + i * rowh)
+    avail_h = (H - 140) - top  # dół: strefa paska postępu
+    itf = None
+    wrapped = []
+    for size in (46, 43, 40, 37, 34):
+        itf = _f(brand.font_med, size)
+        lineh = int(size * 1.2)
+        gap = 34
+        wrapped = [_wrap_rich(d, _parse_rich(str(it)), itf, max_w) for it in items]
+        total_h = sum(max(len(ls) * lineh, 2 * r + 8) + gap for ls in wrapped) - gap
+        if total_h <= avail_h:
+            break
+    lineh = int(itf.size * 1.2)
+    gap = 34
+    cy = int(top)
+    for it_lines in wrapped:
         _check(base, brand, MARGIN, cy, r=r)
-        words = _parse_rich(str(it))
-        line, lw = [], 0.0
         yy = cy - 6
-        for w, acc in words:
-            ww = d.textlength(w, font=itf)
-            if line and lw + ww + space > max_w:
-                _draw_rich(base, tx, yy, [line], itf, white, accent, int(itf.size * 1.2))
-                yy += int(itf.size * 1.2)
-                line, lw = [(w, acc)], ww
-            else:
-                line.append((w, acc))
-                lw += ww + (space if len(line) > 1 else 0)
-        if line:
-            _draw_rich(base, tx, yy, [line], itf, white, accent, int(itf.size * 1.2))
+        for line in it_lines:
+            _draw_rich(base, tx, yy, [line], itf, white, accent, lineh)
+            yy += lineh
+        cy += max(len(it_lines) * lineh, 2 * r + 8) + gap
     _progress(base, brand, idx, total)
     return base.convert("RGB")
 
