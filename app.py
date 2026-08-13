@@ -662,3 +662,96 @@ def eval_photo_endpoint(url: str = Query(...), x_api_key: str = Header(default="
     suitable = "tak" if v.get("suitable") else "nie"
     reason = (v.get("reason") or "").strip() or f"Ocena AI: {suitable}."
     return _out(suitable, reason)
+
+
+# ======================================================================
+# FORMAT „to «X» — dopóki…"  —  render na serwerze  (13.08.2026)
+# ----------------------------------------------------------------------
+# ⛔ PO CO TO POWSTAŁO
+# Ten format do dziś renderował się WYŁĄCZNIE w otwartej karcie przeglądarki
+# (`generator-z2.js`). Znaczyło to, że automat nie umiał go uruchomić — a więc
+# „losuj format przy każdej nowej puli treści" nie mogło działać: losowanie
+# trafiałoby czasem na format, którego pipeline nie potrafi wywołać.
+# Teraz oba formaty odpala się tak samo: jednym POST-em.
+#
+# ⛔ CZEGO TEN ENDPOINT NIE ROBI
+# Nie liczy twarzy (ramki przychodzą gotowe z bazy, policzone raz detektorem)
+# i nie sprawdza treści (bramka stoi w workerze i woła ją zamawiający).
+# ======================================================================
+import render_z2 as Z2
+
+
+class Z2Zdjecie(BaseModel):
+    u: str
+    r: Optional[List[float]] = None        # [x, y, w, h] ramki twarzy w PROCENTACH
+
+
+class Z2Zdjecia(BaseModel):
+    ludzie: List[Z2Zdjecie] = []
+    bez: List[Z2Zdjecie] = []
+
+
+class Z2Req(BaseModel):
+    temat: str
+    linie: List[List[str]]                 # 6 × [zarzut, „dopóki…"]
+    cta: List[str]                         # [hasło, zdanie]
+    zdjecia: Z2Zdjecia
+    czcionka_naglowka: str = ""
+    czcionka_tresci: str = ""
+    akcent: str = "#E8402A"
+    podklad: str = ""
+    drabinka: str = "domyslna"             # „domyslna" albo „wysoko" (Agnieszka)
+    job_id: Optional[str] = None
+
+
+@app.post("/render_z2")
+def render_z2_endpoint(req: Z2Req, x_api_key: str = Header(default="")):
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="bad api key")
+    if len(req.linie) < 6:
+        raise HTTPException(status_code=422, detail="format wymaga 6 linii „to «X» — dopóki…”")
+    if len(req.cta) < 2:
+        raise HTTPException(status_code=422, detail="cta musi mieć hasło i zdanie")
+
+    marka = {
+        "akcent": req.akcent,
+        "podklad": (req.podklad or req.akcent),
+        "czcionkaNag": req.czcionka_naglowka,
+        "czcionkaTxt": req.czcionka_tresci,
+    }
+    tresc = {
+        "temat": req.temat,
+        "linie": [list(l)[:2] for l in req.linie[:6]],
+        "cta": list(req.cta)[:2],
+    }
+    zdjecia = {
+        "ludzie": [{"u": z.u, "r": z.r} for z in req.zdjecia.ludzie],
+        "bez": [{"u": z.u, "r": z.r} for z in req.zdjecia.bez],
+    }
+
+    # ⛔ Brak czcionki nie wywala renderu (leci zapasowa), ale MUSI być widoczny
+    # w odpowiedzi — inaczej klient dostałby karuzelę w cudzym kroju i nikt by
+    # nie wiedział dlaczego.
+    braki = [n for n, nag in ((req.czcionka_naglowka, True), (req.czcionka_tresci, False))
+             if n and not Z2.czcionka_jest(n, nag)]
+
+    wyn = Z2.zrob_karuzele(marka, tresc, zdjecia,
+                           {"drabinka": req.drabinka, "pobierz": _download})
+    if "err" in wyn:
+        return JSONResponse({"ok": False, "err": wyn["err"], "rap": wyn.get("rap", [])},
+                            status_code=422)
+
+    job = req.job_id or uuid.uuid4().hex[:12]
+    out_dir = os.path.join(STATIC_DIR, job)
+    os.makedirs(out_dir, exist_ok=True)
+    urls = []
+    for n, img in enumerate(wyn["plansze"], 1):
+        nazwa = "z2-%d.jpg" % n
+        img.save(os.path.join(out_dir, nazwa), "JPEG", quality=92)
+        urls.append("%s/static/%s/%s" % (BASE_URL, job, nazwa))
+
+    return JSONResponse({
+        "ok": True, "job_id": job, "count": len(urls), "slides": urls,
+        "ludzi": wyn["ludzi"], "rap": wyn["rap"],
+        "brakujace_czcionki": braki,
+    })
