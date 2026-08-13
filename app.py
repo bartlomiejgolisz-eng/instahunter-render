@@ -68,22 +68,53 @@ class RenderReq(BaseModel):
     job_id: Optional[str] = None    # do re-renderu tej samej karty (nadpisuje)
 
 
-def _download(url: str) -> Optional[Image.Image]:
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "InstaHunter/1.0"})
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return Image.open(io.BytesIO(r.read())).convert("RGB")
-    except Exception:
-        return None
+# ⛔⛔ TWARDY SUFIT NA POBIERANY PLIK — 13.08 wieczorem, po trzech restartach z OOM.
+# CO SIĘ STAŁO (zmierzone w logach): scenariusz „4e. Ocena zdjęć" bierze co godzinę
+# 50 rekordów bez oceny i posyła KAŻDY na /eval_photo. Wśród nich siedziało 26 FILMÓW
+# i 3 dokumenty — dla nich endpoint zawsze zwraca 422, więc znacznik „Oceniono" nigdy
+# się nie zapisywał i te same pliki wracały CO GODZINĘ, w kółko. A `r.read()` wciągał
+# każdy z nich DO PAMIĘCI W CAŁOŚCI, zanim ktokolwiek sprawdził, że to nie jest zdjęcie.
+# Kilka filmów naraz = ponad 512 MB = restart instancji.
+# ⭐ Zasada: NAJPIERW sprawdzamy, czy plik w ogóle ma prawo tu być, POTEM go czytamy.
+MAKS_PLIK_BAJTY = int(os.environ.get("MAKS_PLIK_BAJTY", 20 * 1024 * 1024))
 
 
 def _download_bytes(url: str) -> Optional[bytes]:
+    """Pobiera plik z twardym sufitem rozmiaru. Za duży → None, i ani bajta więcej w RAM."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "InstaHunter/1.0"})
         with urllib.request.urlopen(req, timeout=20) as r:
-            return r.read()
+            dl = r.headers.get("Content-Length")
+            if dl and int(dl) > MAKS_PLIK_BAJTY:
+                return None
+            buf = io.BytesIO()
+            while True:
+                kawalek = r.read(262144)
+                if not kawalek:
+                    break
+                buf.write(kawalek)
+                if buf.tell() > MAKS_PLIK_BAJTY:
+                    return None          # urywamy w pół pliku — nie dokańczamy pobierania
+            return buf.getvalue()
     except Exception:
         return None
+
+
+def _download(url: str) -> Optional[Image.Image]:
+    raw = _download_bytes(url)
+    if raw is None:
+        return None
+    try:
+        return Image.open(io.BytesIO(raw)).convert("RGB")
+    except Exception:
+        return None
+
+
+# ⛔ Ile ciężkich robót naraz. Render ma 512 MB; jedna karuzela z2 szczytuje ~220 MB,
+# więc DWIE naraz to restart. Endpointy są synchroniczne, czyli FastAPI puszcza je
+# w puli 40 wątków — bez tej bramki nic ich nie ogranicza poza pamięcią.
+import threading as _th
+_ZAMEK_CIEZKI = _th.BoundedSemaphore(1)
 
 
 # ======================================================================
@@ -602,7 +633,14 @@ async def render_story_endpoint(
 def _vision_bytes(raw: bytes):
     """Przygotowuje bajty do wizji: downscale do max 1200px dłuższego boku, JPEG."""
     try:
-        im = Image.open(io.BytesIO(raw)).convert("RGB")
+        im = Image.open(io.BytesIO(raw))
+        # ⭐ `draft` każe dekoderowi JPEG rozpakować obraz OD RAZU mniejszy (1/2, 1/4, 1/8).
+        # Bez tego rozpakowujemy 36 MB tylko po to, żeby zaraz zejść do 1200 px.
+        try:
+            im.draft("RGB", (1200, 1200))
+        except Exception:
+            pass
+        im = im.convert("RGB")
         long_side = max(im.size)
         if long_side > 1200:
             k = 1200 / long_side
@@ -625,15 +663,23 @@ def eval_photo_endpoint(url: str = Query(...), x_api_key: str = Header(default="
         raise HTTPException(status_code=401, detail="bad api key")
     raw = _download_bytes(url)
     if raw is None:
-        raise HTTPException(status_code=422, detail="nie udało się pobrać zdjęcia")
+        raise HTTPException(status_code=422, detail="nie udało się pobrać zdjęcia (albo jest większy niż %d MB — to nie jest zdjęcie na okładkę)" % (MAKS_PLIK_BAJTY // (1024 * 1024)))
+    # ⭐⭐ SAM NAGŁÓWEK, BEZ DEKODOWANIA PIKSELI. `cover_photo_ok` i `orientation_of`
+    # patrzą WYŁĄCZNIE na `img.size` — sprawdzone w render.py. Pełne `.convert("RGB")`
+    # zdjęcia 4032×3024 to 36 MB w pamięci na każde wywołanie i było tu robione ZAWSZE,
+    # także dla plików, które i tak zaraz odpadały jako poziome albo za małe.
     try:
-        img = Image.open(io.BytesIO(raw)).convert("RGB")
+        naglowek = Image.open(io.BytesIO(raw))
+        w, h = naglowek.size
     except Exception:
         raise HTTPException(status_code=422, detail="nieprawidłowy plik obrazu")
 
-    w, h = img.size
     orientation = R.orientation_of(w, h)
-    det_ok = R.cover_photo_ok(img)
+    det_ok = R.cover_photo_ok(naglowek)
+    try:
+        naglowek.close()
+    except Exception:
+        pass
 
     def _out(suitable, reason):
         return JSONResponse({
@@ -652,7 +698,11 @@ def eval_photo_endpoint(url: str = Query(...), x_api_key: str = Header(default="
         return _out("nie", "Siatka bezpieczeństwa: " + why)
 
     # 2) WIZJA CLAUDE — twarz/zapas na tekst/jakość
-    v = _vision_eval(_vision_bytes(raw), "image/jpeg")
+    # ⛔ Dopiero TU dekodujemy piksele, i tylko dla zdjęć, które przeszły siatkę.
+    with _ZAMEK_CIEZKI:
+        male = _vision_bytes(raw)
+    del raw
+    v = _vision_eval(male, "image/jpeg")
     if v is None:
         return _out("tak", f"Proporcje i rozdzielczość OK ({orientation}, {w}x{h}). "
                            "Ocena wizualna pominięta (brak klucza wizji).")
@@ -743,8 +793,10 @@ def render_z2_endpoint(req: Z2Req, x_api_key: str = Header(default="")):
     zdjecia["ludzie"] = zdjecia["ludzie"][:MAKS_ZDJEC]
     zdjecia["bez"] = zdjecia["bez"][:MAKS_ZDJEC]
 
-    wyn = Z2.zrob_karuzele(marka, tresc, zdjecia,
-                           {"drabinka": req.drabinka, "pobierz": _download})
+    # ⛔ Jedna karuzela naraz. Dwie równoległe to 2 × ~220 MB = restart instancji.
+    with _ZAMEK_CIEZKI:
+        wyn = Z2.zrob_karuzele(marka, tresc, zdjecia,
+                               {"drabinka": req.drabinka, "pobierz": _download})
     if "err" in wyn:
         return JSONResponse({"ok": False, "err": wyn["err"], "rap": wyn.get("rap", [])},
                             status_code=422)
