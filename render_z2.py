@@ -29,6 +29,7 @@ o tym komentarz.
 """
 from __future__ import annotations
 
+import gc
 import io
 import math
 import os
@@ -250,6 +251,10 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
     sk = max(W / iw, H / ih)
     rw, rh = iw * sk, ih * sk
 
+    # ⭐ Skalujemy RAZ, przed pętlą po kadrach — kadr przesuwa obraz, nie zmienia
+    # jego rozmiaru. Wcześniej to samo skalowanie leciało do pięciu razy na pozycję.
+    skala = im.resize((max(1, round(rw)), max(1, round(rh))), Image.LANCZOS)
+
     for kadr in (0.22, 0.02, 0.45, 0.65, 0.85):
         # ⛔ przesunięcie kadru NIE MOŻE uciąć twarzy — stąd brały się „poucinane
         # mordy" u Agnieszki. Ograniczamy je tak, żeby cała ramka została w polu
@@ -268,7 +273,6 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
             ox = max(min(ox, min(0, W - 16 - tx2)), max(W - rw, 16 - tx1))
 
         plotno = Image.new("RGB", (W, H), (0, 0, 0))
-        skala = im.resize((max(1, round(rw)), max(1, round(rh))), Image.LANCZOS)
         plotno.paste(skala, (round(ox), round(oy)))
         rys = ImageDraw.Draw(plotno)
 
@@ -381,6 +385,22 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
 
 
 # ------------------------------------------------------------------ całość
+# ⛔ Dłuższy bok po pobraniu. 1700 px wystarcza z zapasem: kadr ma 1080×1350, więc
+# nawet pionowe 1275×1700 pokrywa go w całości bez rozciągania. Oryginał z telefonu
+# (3024×4032 = 36 MB w pamięci) schodzi do ~6,5 MB. To jedyny powód tego ograniczenia.
+MAKS_BOK = 1700
+
+
+def zmniejsz(im):
+    if im is None:
+        return None
+    if max(im.size) <= MAKS_BOK:
+        return im
+    im = im.copy()
+    im.thumbnail((MAKS_BOK, MAKS_BOK), Image.LANCZOS)
+    return im
+
+
 def zrob_karuzele(marka: dict, tresc: dict, zdjecia: dict, opcje: dict = None):
     """zdjecia: { 'ludzie': [{'u':adres,'r':[x,y,w,h]}], 'bez': [{'u':…,'r':None}] }
     Zwraca { 'plansze': [Image], 'rap': [...] } albo { 'err': '…' }.
@@ -399,7 +419,7 @@ def zrob_karuzele(marka: dict, tresc: dict, zdjecia: dict, opcje: dict = None):
 
     def daj(u):
         if u not in obrazki:
-            obrazki[u] = pobierz(u)
+            obrazki[u] = zmniejsz(pobierz(u))
         return obrazki[u]
 
     for i in range(7):
@@ -455,6 +475,15 @@ def zrob_karuzele(marka: dict, tresc: dict, zdjecia: dict, opcje: dict = None):
             "twarz": mam["r"]["twarz"], "jasnosc": mam["r"]["jasnosc"],
             "poz": "%s/%s" % (mam["poz"][0], mam["poz"][1]),
         })
+
+    for im in obrazki.values():
+        try:
+            if im is not None:
+                im.close()
+        except Exception:
+            pass
+    obrazki.clear()
+    gc.collect()
 
     ludzi = sum(1 for x in rap if x["czlowiek"])
     if ludzi / 7.0 < 0.4:

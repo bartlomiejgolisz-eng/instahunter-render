@@ -735,6 +735,14 @@ def render_z2_endpoint(req: Z2Req, x_api_key: str = Header(default="")):
     braki = [n for n, nag in ((req.czcionka_naglowka, True), (req.czcionka_tresci, False))
              if n and not Z2.czcionka_jest(n, nag)]
 
+    # ⛔ TWARDY SUFIT NA PULĘ. Render ma 512 MB. Nawet po zmniejszeniu jedno zdjęcie
+    # to ~9 MB w pamięci, więc przy pięćdziesięciu wejściowych adresach instancja
+    # znów by padła. Format bierze 7 plansz i szuka najwyżej 12 kandydatów na planszę —
+    # większa pula nic nie wnosi, a kosztuje pamięć.
+    MAKS_ZDJEC = 20
+    zdjecia["ludzie"] = zdjecia["ludzie"][:MAKS_ZDJEC]
+    zdjecia["bez"] = zdjecia["bez"][:MAKS_ZDJEC]
+
     wyn = Z2.zrob_karuzele(marka, tresc, zdjecia,
                            {"drabinka": req.drabinka, "pobierz": _download})
     if "err" in wyn:
