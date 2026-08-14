@@ -242,6 +242,25 @@ _TYP_MAP = {
 }
 
 
+# ⛔⛔ SŁOWA-ZAŚLEPKI. Szablony tokenów mówią „<lub puste>", a model regularnie wpisuje
+# w to miejsce SŁOWO „puste" zamiast zostawić pole pustym. Zmierzone 14.08 na karcie
+# reckmzY4tAXz3KQYp: `[[KICKER]] puste` wyrenderowało nadtytuł „PUSTE ——" na trzech slajdach.
+# Zamiast łatać kolejny prompt (i tak nie zadziała w 100%), czyścimy to w PARSERZE — działa
+# niezależnie od tego, który scenariusz i który prompt wygenerował tokeny.
+_ZASLEPKI = {
+    "puste", "(puste)", "pusto", "brak", "(brak)", "bez", "nie dotyczy", "n/a", "na",
+    "none", "null", "empty", "-", "--", "—", "–", "x", "…", "...",
+}
+
+
+def _bez_zaslepki(v):
+    """Zwraca '' dla wartości, która jest tylko zaślepką („puste", „brak", „-")."""
+    t = str(v or "").strip()
+    if t.lower().strip(".:;!") in _ZASLEPKI:
+        return ""
+    return t
+
+
 def _parse_bar(line):
     """'Etykieta | 62 | tak' -> (label, value_int, highlight_bool). Odporne na braki."""
     parts = [p.strip() for p in str(line).split("|")]
@@ -333,6 +352,16 @@ def parse_carousel_tokens(raw: str):
         v = (v or "").strip()
         return int(v) if v.isdigit() else None
 
+    # ⭐ jedno miejsce czyszczenia: każde pole tokenowe przechodzi przez `_bez_zaslepki`,
+    # a listy tracą pozycje, które są tylko zaślepkami.
+    for _typ, _s in typed:
+        for _k in list(_s.keys()):
+            _v = _s[_k]
+            if isinstance(_v, list):
+                _s[_k] = [x for x in (_bez_zaslepki(i) for i in _v) if x]
+            else:
+                _s[_k] = _bez_zaslepki(_v)
+
     slides, num = [], 0
     for typ, s in typed:
         if typ == "cover":
@@ -355,8 +384,11 @@ def parse_carousel_tokens(raw: str):
             slides.append({
                 "type": "stat",
                 "kicker": s.get("KICKER", "") or None,
-                "figure": s.get("FIGURA", ""),
-                "label": s.get("ETYKIETA", ""),
+                # ⭐ WYBACZAJĄCY PARSER: model bywa, że na slajdzie statystyki wpisze [[LICZBA]]
+                # i [[PODPIS]] zamiast [[FIGURA]] i [[ETYKIETA]] (zmierzone 14.08). Zamiast
+                # renderować pustą wielką liczbę — przyjmujemy oba warianty nazw.
+                "figure": s.get("FIGURA", "") or s.get("LICZBA", "") or s.get("FIGURE", ""),
+                "label": s.get("ETYKIETA", "") or s.get("PODPIS", "") or s.get("NAGLOWEK", ""),
                 "body": s.get("TRESC", ""),
             })
         elif typ == "chart":
