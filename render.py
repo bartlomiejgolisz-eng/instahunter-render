@@ -412,12 +412,31 @@ def _draw_tracked(d, xy, text, font, fill, tracking=8):
 
 
 def _kicker(base, brand, x, y, text):
-    """Mały koralowy nagłówek 'eyebrow' WERSALIKAMI + krótka kreska (editorial)."""
+    """Mały koralowy nagłówek 'eyebrow' WERSALIKAMI + krótka kreska (editorial).
+
+    ⛔⛔ Bartek (14.08): w nadtytule lądowało całe zdanie („TRZY SYTUACJE, W KTÓRYCH
+    FAKTORING WYCHODZI TANIEJ"), a duży nagłówek zostawał pusty („Kiedy to działa").
+    Prompt tego już zabrania, ale renderer nie może na to liczyć: nadtytuł rysowany
+    był JEDNĄ linią bez żadnego ograniczenia szerokości, więc długi tekst po prostu
+    wyjeżdżał poza kadr i się urywał. Tu jest twarda zapora: zmniejszamy stopień
+    i zacieśniamy światło, aż napis zmieści się w kadrze; dopiero na końcu ucinamy."""
     if not text:
         return y
     d = ImageDraw.Draw(base)
-    f = _f(brand.font_bold, 28)
-    end = _draw_tracked(d, (x, y), text.upper(), f, hex2rgb(brand.accent), tracking=8)
+    txt = text.upper()
+    dost = W - x - MARGIN - 80          # 80 px zostawiamy na kreskę za napisem
+    rozmiar, tracking = 28, 8
+    while rozmiar >= 18:
+        f = _f(brand.font_bold, rozmiar)
+        szer = sum(d.textlength(ch, font=f) + tracking for ch in txt)
+        if szer <= dost:
+            break
+        rozmiar -= 2
+        tracking = max(2, tracking - 1)
+    f = _f(brand.font_bold, rozmiar)
+    while len(txt) > 8 and sum(d.textlength(ch, font=f) + tracking for ch in txt) > dost:
+        txt = txt[:-2]
+    end = _draw_tracked(d, (x, y), txt, f, hex2rgb(brand.accent), tracking=tracking)
     cy = y + 15
     d.line([(end + 6, cy), (end + 70, cy)], fill=hex2rgb(brand.accent), width=3)
     return y + 52
@@ -541,8 +560,8 @@ def cover_photo_ok(img):
 
 
 # ---------- ZDJĘCIE OKŁADKI ----------
-def _cover_crop(img, w, h):
-    return ImageOps.fit(img, (w, h), method=Image.LANCZOS, centering=(0.5, 0.4))
+def _cover_crop(img, w, h, centering=(0.5, 0.4)):
+    return ImageOps.fit(img, (w, h), method=Image.LANCZOS, centering=centering)
 
 
 def _warm_grade(img):
@@ -564,12 +583,23 @@ def _bottom_scrim(base, brand, frac=0.62):
 
 
 # ---------- SLAJDY ----------
-def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=None, title_shift=0):
-    """Okładka. Ze zdjęciem = pełnoklatkowe foto+scrim; bez = tekstowa z badge liczby."""
+def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=None, title_shift=0,
+                 twarz=None):
+    """Okładka. Ze zdjęciem = pełnoklatkowe foto+scrim; bez = tekstowa z badge liczby.
+
+    ⭐ `twarz` = ramka [x, y, w, h] w PROCENTACH zdjęcia (pole „Twarz — ramka" w bazie).
+    Bartek (14.08): „mapowanie twarzy musi być też w karuzeli tokenowej i w stories".
+    Stories dostały to wcześniej; tu robimy to samo dwoma ruchami: (1) kadr wycinamy
+    tak, żeby twarz poszła do góry, (2) jeżeli mimo to blok tekstu wypada na twarzy —
+    PRZENOSIMY TEKST, nie twarz. Bez ramki wszystko działa dokładnie jak dotąd."""
     base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
     on_photo = photo is not None
+    _tw = None
     if on_photo:
-        ph = _cover_crop(_warm_grade(photo.convert("RGB")), W, H)
+        _cent = _kadr_wg_twarzy(twarz, domyslne=(0.5, 0.4), cel_y=0.30)
+        _zrodlo = _warm_grade(photo.convert("RGB"))
+        ph = _cover_crop(_zrodlo, W, H, centering=_cent)
+        _tw = _twarz_na_kadrze(_zrodlo, twarz, centering=_cent, sw=W, sh=H)
         _pb = getattr(brand, "photo_blur", 0.0)
         if _pb and _pb > 0:
             ph = ph.filter(ImageFilter.GaussianBlur(_pb))
@@ -617,6 +647,23 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
         block_h = lh * len(tl) + (34 + chip_h if subtitle else 0)
         y = H - 158 - block_h - int(title_shift or 0)
         y = max(120, y)
+        # ⭐⭐ NAPIS SCHODZI Z TWARZY. Domyślnie blok stoi u dołu kadru — dokładnie tam,
+        # gdzie na wielu zdjęciach z telefonu jest twarz. Jeżeli ramka twarzy mówi, że
+        # tak jest, próbujemy najpierw POD twarzą, a jak nie ma miejsca — NAD nią,
+        # dokładając wtedy przyciemnienie od góry, żeby biały tekst został czytelny.
+        if _tw is not None:
+            f1, f2 = _tw
+            if y < f2 and (y + block_h) > f1:
+                pod = f2 + 34
+                nad = f1 - 34 - block_h
+                if pod + block_h <= H - 150:
+                    y = int(pod)
+                elif nad >= 170:
+                    y = int(nad)
+                    _top_scrim(base, brand, frac=0.66)
+                    # przyciemnienie poszło NA narysowany już pasek górny — rysujemy go
+                    # jeszcze raz, żeby handle i licznik nie zgasły
+                    _header(base, brand, idx, total, shadow=on_photo)
         y = _draw_rich(base, MARGIN, y, tl, tf, white, white, lh, shadow=True, shadow_strength=_ss)
         if subtitle and cf is not None:
             cy = y + 34
@@ -882,7 +929,7 @@ def render_cta(brand, heading, body, cta, idx, total, photo=None):
 
 
 # ---------- ORKIESTRACJA ----------
-def render_carousel(brand, slides, out_dir, photos=None, avatar=None):
+def render_carousel(brand, slides, out_dir, photos=None, avatar=None, twarze=None):
     """
     slides: lista dictów. Każdy:
       {"type":"cover","title","subtitle","tagline","count"(opc)}
@@ -897,10 +944,18 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None):
     total = len(slides)
     paths = []
     cover_photo = None
+    cover_twarz = None
     if photos:
         p = photos[0]
         cand = Image.open(p) if isinstance(p, str) else p
-        cover_photo = cand if cover_photo_ok(cand) else None
+        if cover_photo_ok(cand):
+            cover_photo = cand
+            # ⭐ ramka twarzy jedzie RÓWNOLEGLE do zdjęć: i-ta ramka opisuje i-te zdjęcie.
+            if twarze:
+                try:
+                    cover_twarz = twarze[0]
+                except (IndexError, TypeError):
+                    cover_twarz = None
     av = None
     if avatar is not None:
         av = Image.open(avatar) if isinstance(avatar, str) else avatar
@@ -917,7 +972,8 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None):
         if t == "cover":
             img = render_cover(eff, s.get("title", ""), s.get("subtitle", ""),
                                s.get("tagline", ""), i, total,
-                               count=s.get("count"), photo=cover_photo, title_shift=tshift)
+                               count=s.get("count"), photo=cover_photo, title_shift=tshift,
+                               twarz=cover_twarz)
         elif t == "cta":
             # CTA: w kółku ZDJĘCIE PROFILOWE klienta (decyzja Bartka s103); zdjęcie
             # z okładki tylko awaryjnie, gdy brak profilowego.
