@@ -1246,7 +1246,7 @@ def render_cta(brand, heading, body, cta, idx, total, photo=None):
 
 
 # ---------- ORKIESTRACJA ----------
-def render_carousel(brand, slides, out_dir, photos=None, avatar=None, twarze=None):
+def render_carousel(brand, slides, out_dir, photos=None, avatar=None, twarze=None, info=None):
     """
     slides: lista dictów. Każdy:
       {"type":"cover","title","subtitle","tagline","count"(opc)}
@@ -1287,6 +1287,7 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None, twarze=Non
             finally:
                 _ctx.text_scale = _stare_skalowanie
         _zapas = None
+        _zapas_i = None
         for _i, _p in enumerate(photos):
             try:
                 _c = Image.open(_p) if isinstance(_p, str) else _p
@@ -1301,14 +1302,18 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None, twarze=Non
                 except (IndexError, TypeError):
                     _tw = None
             if _zapas is None:
-                _zapas = (_c, _tw)
+                _zapas, _zapas_i = (_c, _tw), _i
             if _y_doc is None or not _tw:
                 continue
             if _plan_kadru(_c.size[0], _c.size[1], _tw, W, H, _y_doc - 34) is not None:
-                _zapas = (_c, _tw)
+                _zapas, _zapas_i = (_c, _tw), _i
                 break
         if _zapas is not None:
             cover_photo, cover_twarz = _zapas
+            # ⭐ mówimy wywołującemu, KTÓRE zdjęcie poszło na okładkę — Make musi ostemplować
+            #   rotację i zapisać w karcie to samo, a nie pierwsze z brzegu.
+            if isinstance(info, dict):
+                info["okladka"] = _zapas_i
     av = None
     if avatar is not None:
         av = Image.open(avatar) if isinstance(avatar, str) else avatar
