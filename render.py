@@ -1047,6 +1047,9 @@ def render_porownanie(brand, kicker, heading, lewa, punkty_l, prawa, punkty_p, i
             wys += max(len(_wrap_rich(d, _parse_rich(str(it)), f, tekst_w)) * lh, 46) + 26
         wysokosci.append(wys - 26 + 2 * pad)
     kh = min(max(wysokosci), dol - top)
+    # blok kart wyśrodkowany w tym, co zostało pod nagłówkiem — inaczej przy krótkich
+    # listach karty wiszą u góry, a pół slajdu świeci pustką
+    top = int(top + max(0, (dol - top - kh)) * 0.45)
     _karta(base, brand, [MARGIN, top, MARGIN + kol_w, top + kh], sila=0.07)
     _karta(base, brand, [MARGIN + kol_w + przerwa, top, W - MARGIN, top + kh], sila=0.07,
            obwodka=accent)
@@ -1170,7 +1173,7 @@ def render_cytat(brand, cytat, autor, idx, total, avatar=None, kicker=None):
     wys = lh * len(cl)
     # ⛔ FIX: cudzysłów rysowany „na oko" wchodził na pierwszą literę cytatu. Mierzymy
     # jego REALNY obrys (textbbox) i stawiamy go NAD tekstem, wyrównanego do marginesu.
-    qf = _f(brand.font_heavy, 190)
+    qf = _f(brand.font_heavy, 300)
     qtxt = "\u201d"
     try:
         qb = d.textbbox((0, 0), qtxt, font=qf)
