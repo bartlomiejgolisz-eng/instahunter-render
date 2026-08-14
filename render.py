@@ -19,6 +19,7 @@ Font produkcyjny: Space Grotesk (bundlowany w fonts/).
 
 from __future__ import annotations
 import os
+import math
 import dataclasses
 import threading
 from dataclasses import dataclass
@@ -582,6 +583,102 @@ def _bottom_scrim(base, brand, frac=0.62):
     base.alpha_composite(solid)
 
 
+# ---------- KADR OKŁADKI WG TWARZY ----------
+def _metryka_okladki(d, brand, title, subtitle):
+    """Liczy WYSOKOŚĆ bloku tekstu okładki (hook + chip podtytułu) razem z fontami.
+
+    ⭐ Wydzielone, bo teraz potrzebujemy tego DWA razy i w tej kolejności:
+    najpierw żeby wiedzieć, gdzie stanie napis (a więc jaki kadr wyciąć),
+    potem żeby ten napis narysować. Jedna funkcja = zero szans na rozjazd."""
+    tf, tl, _ = _fit_rich(d, title, brand.font_heavy, 104, 74, 3)
+    lh = int(tf.size * 1.06)
+    cf = None
+    chip_h = 0
+    sub_lines = []
+    chip_lh = 0
+    if subtitle:
+        sub_txt = " ".join(w for w, _ in _parse_rich(subtitle))
+        chip_max_w = W - 2 * MARGIN - 2 * 40
+        cf, sub_lines, _ = _fit_rich(d, sub_txt, brand.font_bold, 68, 44, 1, max_w=chip_max_w)
+        if len(sub_lines) > 1 or any(_line_w(d, ln, cf) > chip_max_w for ln in sub_lines):
+            cf, sub_lines, _ = _fit_rich(d, sub_txt, brand.font_bold, 52, 34, 2, max_w=chip_max_w)
+        chip_lh = int(cf.size) if len(sub_lines) == 1 else int(cf.size * 1.22)
+        chip_h = chip_lh * len(sub_lines) + 2 * 22
+    block_h = lh * len(tl) + (34 + chip_h if subtitle else 0)
+    return {"tf": tf, "tl": tl, "lh": lh, "cf": cf, "sub_lines": sub_lines,
+            "chip_lh": chip_lh, "chip_h": chip_h, "block_h": block_h}
+
+
+def _plan_kadru(iw, ih, twarz, w, h, dol_bezpieczny, gora_min=36, max_zoom=2.4):
+    """Sama MATEMATYKA kadru — bez dotykania pikseli, więc można nią TANIO sprawdzić
+    kilkanaście zdjęć i wybrać to, które w ogóle nadaje się na okładkę.
+    Zwraca (skala, ox, oy, y1_twarzy, y2_twarzy) albo None."""
+    try:
+        if not twarz or len(twarz) < 4 or iw <= 0 or ih <= 0:
+            return None
+        x, y, fw, fh = [float(v) for v in twarz[:4]]
+        if fw <= 0 or fh <= 0:
+            return None
+        fx1, fy1 = x / 100.0 * iw, y / 100.0 * ih
+        fx2, fy2 = (x + fw) / 100.0 * iw, (y + fh) / 100.0 * ih
+        s_fit = max(w / float(iw), h / float(ih))
+        cel = float(dol_bezpieczny)
+        if cel <= gora_min + 60:
+            return None
+        if (fy2 - fy1) * s_fit > (cel - gora_min):
+            return None                                  # twarz i tak się nie zmieści
+        sk = s_fit
+        if fy2 > 1:
+            sk = max(sk, cel / fy2)                      # kadr nie wystaje górą
+        if ih - fy2 > 1:
+            sk = max(sk, (h - cel) / (ih - fy2))         # kadr nie wystaje dołem
+        sk = min(sk, s_fit * max_zoom)
+        rw, rh = int(math.ceil(iw * sk)), int(math.ceil(ih * sk))
+        if rw < w or rh < h:
+            return None
+        oy = min(0.0, max(h - rh, cel - fy2 * sk))
+        if oy + fy1 * sk < gora_min:                     # czubek głowy nie ucieka z kadru
+            oy = min(0.0, max(h - rh, gora_min - fy1 * sk))
+        ox = min(0.0, max(w - rw, w / 2.0 - (fx1 + fx2) / 2.0 * sk))
+        lx = max(0, min(rw - w, int(round(-ox))))
+        ly = max(0, min(rh - h, int(round(-oy))))
+        g1, g2 = fy1 * sk - ly, fy2 * sk - ly
+        if g2 > cel + 2:
+            return None                                  # nie udało się — niech zdecyduje wywołujący
+        return (sk, lx, ly, g1, g2)
+    except Exception:
+        return None
+
+
+def _kadr_twarz_nad(img, twarz, w, h, dol_bezpieczny, gora_min=36, max_zoom=2.4):
+    """Wycina kadr w×h tak, żeby CAŁA twarz stanęła NAD linią `dol_bezpieczny`.
+
+    ⛔⛔ DLACZEGO STARE PODEJŚCIE NIE DZIAŁAŁO (zmierzone 14.08 na gosia-03): zdjęcie
+    z telefonu 3:4 w kanwie 4:5 ma raptem ~90 px zapasu w pionie, więc `ImageOps.fit`
+    z dowolnym `centering` daje praktycznie ten sam kadr. Render z ramką i bez ramki
+    wyszedł niemal identyczny — napis leżał na brodzie w obu. Kod próbował wtedy
+    PRZENIEŚĆ NAPIS (pod twarz albo nad twarz), a gdy nie mieścił się ani tu, ani tu,
+    po cichu zostawiał go na twarzy. Czyli: dokładnie to, co widział Bartek.
+    ⭐ POPRAWNA DŹWIGNIA: na okładce napis ma STAŁE miejsce u dołu, więc to ZDJĘCIE ma
+    się dopasować do napisu. Dobieramy więc nie tylko przesunięcie, ale i SKALĘ —
+    gdy zdjęcie nie ma zapasu, kadrujemy ciaśniej (zoom), aż twarz wejdzie nad napis.
+    Zwraca (kadr, (y1, y2)) albo None, gdy fizycznie się nie da — wtedy działa stara
+    ścieżka awaryjna. Bez ramki twarzy zwraca None i nic się nie zmienia."""
+    try:
+        if img is None:
+            return None
+        iw, ih = img.size
+        plan = _plan_kadru(iw, ih, twarz, w, h, dol_bezpieczny, gora_min=gora_min, max_zoom=max_zoom)
+        if plan is None:
+            return None
+        sk, lx, ly, g1, g2 = plan
+        rw, rh = int(math.ceil(iw * sk)), int(math.ceil(ih * sk))
+        skala = img.resize((rw, rh), Image.LANCZOS)
+        return skala.crop((lx, ly, lx + w, ly + h)), (g1, g2)
+    except Exception:
+        return None
+
+
 # ---------- SLAJDY ----------
 def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=None, title_shift=0,
                  twarz=None):
@@ -595,11 +692,22 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
     base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
     on_photo = photo is not None
     _tw = None
+    _m = None
+    _kadr_ok = False
     if on_photo:
-        _cent = _kadr_wg_twarzy(twarz, domyslne=(0.5, 0.4), cel_y=0.30)
+        # ⭐ KOLEJNOŚĆ MA ZNACZENIE: najpierw mierzymy napis (ma stałe miejsce u dołu),
+        # dopiero potem wycinamy kadr tak, żeby twarz stanęła NAD nim.
+        _m = _metryka_okladki(ImageDraw.Draw(base), brand, title, subtitle)
+        _y_doc = max(120, H - 158 - _m["block_h"] - int(title_shift or 0))
         _zrodlo = _warm_grade(photo.convert("RGB"))
-        ph = _cover_crop(_zrodlo, W, H, centering=_cent)
-        _tw = _twarz_na_kadrze(_zrodlo, twarz, centering=_cent, sw=W, sh=H)
+        _wyc = _kadr_twarz_nad(_zrodlo, twarz, W, H, _y_doc - 34)
+        if _wyc is not None:
+            ph, _tw = _wyc
+            _kadr_ok = True
+        else:
+            _cent = _kadr_wg_twarzy(twarz, domyslne=(0.5, 0.4), cel_y=0.30)
+            ph = _cover_crop(_zrodlo, W, H, centering=_cent)
+            _tw = _twarz_na_kadrze(_zrodlo, twarz, centering=_cent, sw=W, sh=H)
         _pb = getattr(brand, "photo_blur", 0.0)
         if _pb and _pb > 0:
             ph = ph.filter(ImageFilter.GaussianBlur(_pb))
@@ -621,37 +729,16 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
         # HOOK: cały biały (akcentowane słowa też białe — wyróżnienie wielkością, nie kolorem).
         # Kolor marki NIE jest zmieniany: wraca jako WYPEŁNIONY chip podtytułu (biały tekst na
         # akcencie = czytelny dla KAŻDEGO koloru marki, także ciemnego jak granat).
-        tf, tl, _ = _fit_rich(d, title, brand.font_heavy, 104, 74, 3)
-        lh = int(tf.size * 1.06)
         _ss = getattr(brand, "shadow_strength", 1.0)
-        cf = None
-        chip_h = 0
-        sub_txt = ""
-        sub_lines = []
-        chip_lh = 0
-        if subtitle:
-            sub_txt = " ".join(w for w, _ in _parse_rich(subtitle))  # bez znaczników *akcentu*
-            chip_max_w = W - 2 * MARGIN - 2 * 40
-            # FIX (ucięty podtytuł): najpierw próbujemy 1 linii, jak nie wchodzi
-            # nawet przy min. rozmiarze — zawijamy do 2 linii (nigdy nie ucinamy).
-            cf, sub_lines, _ = _fit_rich(d, sub_txt, brand.font_bold, 68, 44, 1,
-                                         max_w=chip_max_w)
-            if len(sub_lines) > 1 or any(_line_w(d, ln, cf) > chip_max_w for ln in sub_lines):
-                cf, sub_lines, _ = _fit_rich(d, sub_txt, brand.font_bold, 52, 34, 2,
-                                             max_w=chip_max_w)
-            if len(sub_lines) == 1:
-                chip_lh = int(cf.size)
-            else:
-                chip_lh = int(cf.size * 1.22)
-            chip_h = chip_lh * len(sub_lines) + 2 * 22
-        block_h = lh * len(tl) + (34 + chip_h if subtitle else 0)
-        y = H - 158 - block_h - int(title_shift or 0)
-        y = max(120, y)
+        tf, tl, lh = _m["tf"], _m["tl"], _m["lh"]
+        cf, sub_lines, chip_lh, chip_h = _m["cf"], _m["sub_lines"], _m["chip_lh"], _m["chip_h"]
+        block_h = _m["block_h"]
+        y = max(120, H - 158 - block_h - int(title_shift or 0))
         # ⭐⭐ NAPIS SCHODZI Z TWARZY. Domyślnie blok stoi u dołu kadru — dokładnie tam,
         # gdzie na wielu zdjęciach z telefonu jest twarz. Jeżeli ramka twarzy mówi, że
         # tak jest, próbujemy najpierw POD twarzą, a jak nie ma miejsca — NAD nią,
         # dokładając wtedy przyciemnienie od góry, żeby biały tekst został czytelny.
-        if _tw is not None:
+        if _tw is not None and not _kadr_ok:
             f1, f2 = _tw
             if y < f2 and (y + block_h) > f1:
                 pod = f2 + 34
@@ -664,6 +751,11 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
                     # przyciemnienie poszło NA narysowany już pasek górny — rysujemy go
                     # jeszcze raz, żeby handle i licznik nie zgasły
                     _header(base, brand, idx, total, shadow=on_photo)
+                else:
+                    # ⛔ TU KOD DOTĄD MILCZAŁ i zostawiał napis na twarzy. Skoro nie da się
+                    # ani zejść pod twarz, ani wejść nad nią — przynajmniej dokładamy pełne
+                    # przyciemnienie, żeby biały tekst był czytelny, a nie „szary na policzku".
+                    _bottom_scrim(base, brand, frac=0.98)
         y = _draw_rich(base, MARGIN, y, tl, tf, white, white, lh, shadow=True, shadow_strength=_ss)
         if subtitle and cf is not None:
             cy = y + 34
@@ -876,6 +968,228 @@ def render_chart(brand, kicker, heading, bars, idx, total, avatar=None):
     return base.convert("RGB")
 
 
+def _krzyzyk(base, brand, x, y, r=20, kolor=None):
+    """Znacznik „nie" — kółko w kolorze drugoplanowym z białym iksem."""
+    d = ImageDraw.Draw(base)
+    kol = kolor or _mix(hex2rgb(brand.bg), _ink_on_bg(brand), 0.42)
+    d.ellipse([x, y, x + 2 * r, y + 2 * r], fill=kol)
+    a = r * 0.44
+    cx, cy = x + r, y + r
+    d.line([(cx - a, cy - a), (cx + a, cy + a)], fill=hex2rgb(brand.white), width=5)
+    d.line([(cx - a, cy + a), (cx + a, cy - a)], fill=hex2rgb(brand.white), width=5)
+
+
+def _karta(base, brand, box, sila=0.10, obwodka=None, promien=34):
+    """Miękka karta pod treść — delikatnie jaśniejsze/ciemniejsze pole na tle marki."""
+    d = ImageDraw.Draw(base)
+    d.rounded_rectangle(box, radius=promien,
+                        fill=_mix(hex2rgb(brand.bg), _ink_on_bg(brand), sila))
+    if obwodka:
+        d.rounded_rectangle(box, radius=promien, outline=obwodka, width=3)
+
+
+def render_porownanie(brand, kicker, heading, lewa, punkty_l, prawa, punkty_p, idx, total,
+                      avatar=None):
+    """⭐ NOWY RODZAJ SLAJDU (Bartek, 14.08: „większość slajdów jest taka sama… dołóżmy
+    jeszcze ze dwa, trzy rodzaje"). PORÓWNANIE DWÓCH KOLUMN: tak/nie, przed/po, mit/fakt.
+    Lewa kolumna = to, co NIE działa (iksy, kolor drugoplanowy), prawa = to, co działa
+    (ptaszki, kolor marki). Czyta się jednym rzutem oka — dokładnie dlatego, że nie jest
+    to „napis na górze, wyjaśnienie na dole"."""
+    base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
+    _vignette(base, brand)
+    _accent_bar(base, brand)
+    if avatar is None:
+        _ornaments(base, brand)
+    _header(base, brand, idx, total)
+    _avatar(base, brand, avatar, W - MARGIN - 66, 205, 66)
+    d = ImageDraw.Draw(base)
+    white, accent, taupe = _ink_on_bg(brand), hex2rgb(brand.accent), _sec_on_bg(brand)
+
+    y = _kicker(base, brand, MARGIN, 300, kicker) + 4 if kicker else 300
+    if heading:
+        hf, hl, _ = _fit_rich(d, heading, brand.font_heavy, 64, 44, 2)
+        y = _draw_rich(base, MARGIN, y, hl, hf, white, accent, int(hf.size * 1.08))
+    top = int(y + 60)
+
+    przerwa = 36
+    kol_w = (W - 2 * MARGIN - przerwa) / 2.0
+    dol = H - 150
+    kolumny = [
+        (MARGIN, lewa, [i for i in (punkty_l or []) if str(i).strip()][:4], False),
+        (MARGIN + kol_w + przerwa, prawa, [i for i in (punkty_p or []) if str(i).strip()][:4], True),
+    ]
+    pad = 30
+    tekst_w = kol_w - 2 * pad - 52          # 52 px na znacznik
+    # jeden wspólny stopień pisma dla OBU kolumn — inaczej wygląda to jak dwa różne slajdy
+    rozmiar = 40
+    for rozmiar in (40, 37, 34, 31, 28):
+        f = _f(brand.font_med, rozmiar)
+        lh = int(rozmiar * 1.24)
+        naj = 0
+        for _, tyt, punkty, _p in kolumny:
+            wys = 96 if tyt else 20
+            for it in punkty:
+                lines = _wrap_rich(d, _parse_rich(str(it)), f, tekst_w)
+                wys += max(len(lines) * lh, 46) + 26
+            naj = max(naj, wys)
+        if top + pad + naj <= dol - pad:
+            break
+    f = _f(brand.font_med, rozmiar)
+    lh = int(rozmiar * 1.24)
+    tf = _f(brand.font_bold, min(42, rozmiar + 4))
+
+    # ⭐ karta ma wysokość TREŚCI, a nie całego kadru — inaczej pod krótką listą zostaje
+    # pół slajdu pustki i wygląda to jak błąd renderu, a nie jak decyzja.
+    wysokosci = []
+    for _, tyt, punkty, _d in kolumny:
+        wys = 96 if tyt else 20
+        for it in punkty:
+            wys += max(len(_wrap_rich(d, _parse_rich(str(it)), f, tekst_w)) * lh, 46) + 26
+        wysokosci.append(wys - 26 + 2 * pad)
+    kh = min(max(wysokosci), dol - top)
+    _karta(base, brand, [MARGIN, top, MARGIN + kol_w, top + kh], sila=0.07)
+    _karta(base, brand, [MARGIN + kol_w + przerwa, top, W - MARGIN, top + kh], sila=0.07,
+           obwodka=accent)
+
+    for x0, tyt, punkty, dobra in kolumny:
+        cy = top + pad
+        if tyt:
+            txt = str(tyt).upper()
+            while d.textlength(txt, font=tf) > kol_w - 2 * pad and len(txt) > 4:
+                txt = txt[:-2]
+            d.text((x0 + pad, cy), txt, font=tf, fill=(accent if dobra else taupe))
+            cy += 96
+        for it in punkty:
+            lines = _wrap_rich(d, _parse_rich(str(it)), f, tekst_w)
+            if dobra:
+                _check(base, brand, x0 + pad, cy, r=17)
+            else:
+                _krzyzyk(base, brand, x0 + pad, cy, r=17)
+            yy = cy - 6
+            for line in lines:
+                _draw_rich(base, x0 + pad + 52, yy, [line], f, white, accent, lh)
+                yy += lh
+            cy += max(len(lines) * lh, 46) + 26
+    _progress(base, brand, idx, total)
+    return base.convert("RGB")
+
+
+def render_kroki(brand, kicker, heading, kroki, idx, total, avatar=None):
+    """⭐ NOWY RODZAJ SLAJDU: OŚ KROKÓW 1 → 2 → 3. Numerowane kółka spięte pionową linią,
+    przy każdym tytuł kroku i (opcjonalnie) jedno zdanie wyjaśnienia — `Tytuł | wyjaśnienie`.
+    Inaczej niż lista z ptaszkami: tu widać KOLEJNOŚĆ, a nie zbiór."""
+    base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
+    _vignette(base, brand)
+    _accent_bar(base, brand)
+    if avatar is None:
+        _ornaments(base, brand)
+    _header(base, brand, idx, total)
+    _avatar(base, brand, avatar, W - MARGIN - 66, 205, 66)
+    d = ImageDraw.Draw(base)
+    white, accent, taupe = _ink_on_bg(brand), hex2rgb(brand.accent), _sec_on_bg(brand)
+
+    y = _kicker(base, brand, MARGIN, 300, kicker) + 4 if kicker else 300
+    if heading:
+        hf, hl, _ = _fit_rich(d, heading, brand.font_heavy, 64, 44, 2)
+        y = _draw_rich(base, MARGIN, y, hl, hf, white, accent, int(hf.size * 1.08))
+
+    pozycje = []
+    for k in (kroki or []):
+        czesci = [c.strip() for c in str(k).split("|")]
+        tytul = czesci[0] if czesci else ""
+        opis = czesci[1] if len(czesci) > 1 else ""
+        if tytul:
+            pozycje.append((tytul, opis))
+    pozycje = pozycje[:4]
+    if not pozycje:
+        _progress(base, brand, idx, total)
+        return base.convert("RGB")
+
+    r = 40
+    tx = MARGIN + 2 * r + 34
+    max_w = W - MARGIN - tx
+    top = int(y + 70)
+    dost = (H - 160) - top
+    for st, so in ((52, 40), (48, 37), (44, 34), (40, 31), (36, 29)):
+        ft = _f(brand.font_heavy, st)
+        fo = _f(brand.font_med, so)
+        lht, lho = int(st * 1.12), int(so * 1.28)
+        blok = []
+        wys = 0
+        for tytul, opis in pozycje:
+            lt = _wrap_rich(d, _parse_rich(tytul), ft, max_w)
+            lo = _wrap_rich(d, _parse_rich(opis), fo, max_w) if opis else []
+            h = max(len(lt) * lht + (len(lo) * lho + 14 if lo else 0), 2 * r + 6)
+            blok.append((lt, lo, h))
+            wys += h + 46
+        wys -= 46
+        if wys <= dost:
+            break
+    nf = _f(brand.font_heavy, int(r * 1.0))
+    cy = top
+    for i, (lt, lo, h) in enumerate(blok):
+        # linia łącząca kroki — to ona robi z listy OŚ
+        if i < len(blok) - 1:
+            d.line([(MARGIN + r, cy + 2 * r + 6), (MARGIN + r, cy + h + 46 - 6)],
+                   fill=_mix(hex2rgb(brand.bg), _ink_on_bg(brand), 0.30), width=4)
+        d.ellipse([MARGIN, cy, MARGIN + 2 * r, cy + 2 * r], outline=accent, width=4)
+        num = str(i + 1)
+        nw = d.textlength(num, font=nf)
+        d.text((MARGIN + r - nw / 2, cy + r - nf.size * 0.62), num, font=nf, fill=accent)
+        yy = cy - 4
+        for line in lt:
+            _draw_rich(base, tx, yy, [line], ft, white, accent, lht)
+            yy += lht
+        if lo:
+            yy += 14
+            for line in lo:
+                _draw_rich(base, tx, yy, [[(w, False) for w, _ in line]], fo, taupe, accent, lho)
+                yy += lho
+        cy += h + 46
+    _progress(base, brand, idx, total)
+    return base.convert("RGB")
+
+
+def render_cytat(brand, cytat, autor, idx, total, avatar=None, kicker=None):
+    """⭐ NOWY RODZAJ SLAJDU: CYTAT NA CAŁĄ PLANSZĘ. Jedno zdanie, duże, na środku,
+    z wielkim znakiem cudzysłowu w kolorze marki. Slajd-oddech: przerywa rytm
+    „napis na górze, wyjaśnienie na dole" i daje karuzeli miejsce, w którym oko odpoczywa."""
+    base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
+    _vignette(base, brand)
+    _accent_bar(base, brand)
+    if avatar is None:
+        _ornaments(base, brand)
+    _header(base, brand, idx, total)
+    _avatar(base, brand, avatar, W - MARGIN - 66, 205, 66)
+    d = ImageDraw.Draw(base)
+    white, accent, taupe = _ink_on_bg(brand), hex2rgb(brand.accent), _sec_on_bg(brand)
+
+    txt = str(cytat or "").strip().strip('"\u201e\u201d\u201c')
+    cf, cl, _ = _fit_rich(d, txt, brand.font_heavy, 86, 46, 6)
+    lh = int(cf.size * 1.16)
+    wys = lh * len(cl)
+    # ⛔ FIX: cudzysłów rysowany „na oko" wchodził na pierwszą literę cytatu. Mierzymy
+    # jego REALNY obrys (textbbox) i stawiamy go NAD tekstem, wyrównanego do marginesu.
+    qf = _f(brand.font_heavy, 190)
+    qtxt = "\u201d"
+    try:
+        qb = d.textbbox((0, 0), qtxt, font=qf)
+    except Exception:
+        qb = (0, 0, 120, 120)
+    qw, qh = qb[2] - qb[0], qb[3] - qb[1]
+    caly = qh + 26 + wys + 44 + (56 if autor else 0)
+    gora = int(max(300, (H - caly) / 2))
+    gora = min(gora, H - 190 - caly)
+    d.text((MARGIN - qb[0], gora - qb[1]), qtxt, font=qf, fill=accent)
+    y = _draw_rich(base, MARGIN, gora + qh + 26, cl, cf, white, accent, lh)
+    d.line([(MARGIN, y + 44), (MARGIN + 110, y + 44)], fill=accent, width=5)
+    if autor:
+        af = _f(brand.font_med, 40)
+        d.text((MARGIN, y + 74), str(autor), font=af, fill=taupe)
+    _progress(base, brand, idx, total)
+    return base.convert("RGB")
+
+
 def render_cta(brand, heading, body, cta, idx, total, photo=None):
     """Slajd CTA (ostatni): karta z koralową ramką + okrągły awatar (powrót zdjęcia
     z okładki) + linia 'Obserwuj po więcej'."""
@@ -946,16 +1260,52 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None, twarze=Non
     cover_photo = None
     cover_twarz = None
     if photos:
-        p = photos[0]
-        cand = Image.open(p) if isinstance(p, str) else p
-        if cover_photo_ok(cand):
-            cover_photo = cand
-            # ⭐ ramka twarzy jedzie RÓWNOLEGLE do zdjęć: i-ta ramka opisuje i-te zdjęcie.
+        # ⭐⭐ WYBÓR ZDJĘCIA NA OKŁADKĘ, A NIE „PIERWSZE Z BRZEGU".
+        # Bartek (14.08): „napisy najeżdżają jej na twarz". Część zdjęć po prostu NIE NADAJE SIĘ
+        # na okładkę: twarz jest duża i nisko, więc przy stałym miejscu napisu u dołu nie da się
+        # jej ustawić wyżej żadnym kadrem. Zamiast renderować takie zdjęcie i psuć okładkę,
+        # bierzemy PIERWSZE Z PULI, które przechodzi test geometrii (`_plan_kadru` — sama
+        # matematyka, bez skalowania pikseli, więc sprawdzenie kilkunastu zdjęć jest darmowe).
+        # Gdy żadne nie przejdzie — zostaje pierwsze sensowne i działają stare ścieżki awaryjne.
+        _cs = next((_s for _s in slides if _s.get("type") == "cover"), None)
+        _y_doc = None
+        if _cs is not None:
+            _eff0 = _apply_look(brand, _cs.get("look") or {})
+            _stare_skalowanie = getattr(_ctx, "text_scale", 1.0)
+            _ctx.text_scale = getattr(_eff0, "text_scale", 1.0)
+            try:
+                _mm = _metryka_okladki(ImageDraw.Draw(Image.new("RGB", (W, H))), _eff0,
+                                       _cs.get("title", ""), _cs.get("subtitle", ""))
+                try:
+                    _ts = int((_cs.get("look") or {}).get("title_shift", 0) or 0)
+                except (TypeError, ValueError):
+                    _ts = 0
+                _y_doc = max(120, H - 158 - _mm["block_h"] - _ts)
+            finally:
+                _ctx.text_scale = _stare_skalowanie
+        _zapas = None
+        for _i, _p in enumerate(photos):
+            try:
+                _c = Image.open(_p) if isinstance(_p, str) else _p
+            except Exception:
+                continue
+            if not cover_photo_ok(_c):
+                continue
+            _tw = None
             if twarze:
                 try:
-                    cover_twarz = twarze[0]
+                    _tw = twarze[_i]
                 except (IndexError, TypeError):
-                    cover_twarz = None
+                    _tw = None
+            if _zapas is None:
+                _zapas = (_c, _tw)
+            if _y_doc is None or not _tw:
+                continue
+            if _plan_kadru(_c.size[0], _c.size[1], _tw, W, H, _y_doc - 34) is not None:
+                _zapas = (_c, _tw)
+                break
+        if _zapas is not None:
+            cover_photo, cover_twarz = _zapas
     av = None
     if avatar is not None:
         av = Image.open(avatar) if isinstance(avatar, str) else avatar
@@ -990,6 +1340,17 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None, twarze=Non
         elif t == "chart":
             img = render_chart(eff, s.get("kicker"), s.get("heading", ""),
                                s.get("bars", []), i, total, avatar=av_use)
+        elif t == "porownanie":
+            img = render_porownanie(eff, s.get("kicker"), s.get("heading", ""),
+                                    s.get("lewa", ""), s.get("punkty_l", []),
+                                    s.get("prawa", ""), s.get("punkty_p", []),
+                                    i, total, avatar=av_use)
+        elif t == "kroki":
+            img = render_kroki(eff, s.get("kicker"), s.get("heading", ""),
+                               s.get("kroki", []), i, total, avatar=av_use)
+        elif t == "cytat":
+            img = render_cytat(eff, s.get("cytat", ""), s.get("autor", ""), i, total,
+                               avatar=av_use, kicker=s.get("kicker"))
         else:
             img = render_content(eff, s.get("number"), s.get("heading", ""),
                                  s.get("body", ""), i, total, avatar=av_use,
