@@ -506,6 +506,16 @@ def _merge_look(a: dict, b: dict):
     return out
 
 
+def _ramka(txt):
+    """„x,y,w,h" w PROCENTACH zdjęcia -> [x, y, w, h] albo None. Jedna definicja na cały
+    plik: tej samej ramki używa i /render_stories, i /render_tokens (okładka karuzeli)."""
+    try:
+        v = [float(x) for x in str(txt or "").replace(";", ",").split(",")[:4]]
+        return v if len(v) == 4 and v[2] > 0 and v[3] > 0 else None
+    except Exception:
+        return None
+
+
 @app.post("/render_tokens")
 async def render_tokens_endpoint(
     request: Request,
@@ -514,6 +524,7 @@ async def render_tokens_endpoint(
     white: str = "", handle: str = "", glow: bool = True, ornaments: bool = True,
     font: str = "",
     photo: List[str] = Query(default=[]),
+    twarz: List[str] = Query(default=[]),
     avatar: str = "",
     look: str = "",
     job_id: Optional[str] = None,
@@ -536,11 +547,14 @@ async def render_tokens_endpoint(
         glow=glow, ornaments=ornaments, font_family=font.strip(),
     )
 
-    photos = []
-    for u in photo:
+    # ⭐ RAMKI TWARZY na okładce karuzeli. `twarz` jedzie RÓWNOLEGLE do `photo` — i-ta ramka
+    #   opisuje i-te zdjęcie. Gdy parametru nie ma, kadr wycinany jest jak dotąd.
+    photos, twarze = [], []
+    for i, u in enumerate(photo):
         img = _download(u)
         if img is not None:
             photos.append(img)
+            twarze.append(_ramka(twarz[i]) if i < len(twarz) else None)
     avatar_img = _download(avatar) if avatar.strip() else None
 
     look_cfg = _merge_look(_parse_look(look), _extract_look_token(raw))
@@ -548,7 +562,8 @@ async def render_tokens_endpoint(
         brand = R._apply_look(brand, look_cfg["global"])
     _attach_slide_looks(slides, look_cfg.get("slides"))
 
-    paths = R.render_carousel(brand, slides, out_dir, photos=photos or None, avatar=avatar_img)
+    paths = R.render_carousel(brand, slides, out_dir, photos=photos or None, avatar=avatar_img,
+                              twarze=twarze or None)
     urls = [f"{BASE_URL}/static/{job}/{os.path.basename(p)}" for p in paths]
     title = next((s.get("title", "") for s in slides if s.get("type") == "cover"), "")
     readable = build_readable(slides)
@@ -618,13 +633,7 @@ async def render_story_endpoint(
     #    format „x,y,w,h" w procentach (to samo, co w polu „Twarz — ramka" w bazie).
     #    Pusty łańcuch = brak ramki dla tego zdjęcia. Gdy parametru nie ma w ogóle, kadr
     #    wycinany jest jak dotąd — czyli stary zamawiający nic nie traci.
-    def _ramka(txt):
-        try:
-            v = [float(x) for x in str(txt or "").replace(";", ",").split(",")[:4]]
-            return v if len(v) == 4 and v[2] > 0 and v[3] > 0 else None
-        except Exception:
-            return None
-
+    #    (samo `_ramka` siedzi teraz na poziomie modułu — używa go też /render_tokens)
     photos, twarze = [], []
     for i, u in enumerate(photo):
         img = _download(u)
