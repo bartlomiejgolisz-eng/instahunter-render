@@ -949,6 +949,61 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None):
 SW, SH = 1080, 1920  # kanwa 9:16 Instagram Story
 
 
+def _kadr_wg_twarzy(twarz, domyslne=(0.5, 0.38), cel_y=0.26):
+    """Zamienia ramkę twarzy [x, y, w, h] w PROCENTACH zdjęcia na `centering` dla ImageOps.fit,
+    tak żeby środek twarzy wypadł w GÓRNEJ części kadru — tam, gdzie nie ma napisów.
+
+    ⛔⛔ Bartek, 14.08: „mapowanie twarzy się nie sprawdziło, ponieważ nachodzi bardzo mocno
+    na napis. Na twarz nie powinno tak być." Stories i karuzela tokenowa nie dostawały
+    ramek twarzy w ogóle — kadr był zawsze wycinany na sztywno (0,38 wysokości), więc przy
+    zdjęciu, na którym twarz siedzi nisko, tekst lądował prosto na niej.
+    ⭐ Ramki są policzone detektorem i leżą w bazie („Twarz — ramka"). Tu ich używamy.
+    Gdy ramki nie ma — zachowujemy się dokładnie jak dotąd, więc nic się nie psuje."""
+    try:
+        if not twarz or len(twarz) < 4:
+            return domyslne
+        x, y, w, h = [float(v) for v in twarz[:4]]
+        if w <= 0 or h <= 0:
+            return domyslne
+        sx, sy = (x + w / 2.0) / 100.0, (y + h / 2.0) / 100.0
+        # ImageOps.fit tnie nadmiar; `centering` mówi, KTÓRĄ część zachować.
+        # Chcemy, żeby środek twarzy wypadł na `cel_y` wysokości kadru.
+        cy = min(1.0, max(0.0, (sy - cel_y) / max(0.001, 1.0 - 0.0)))
+        cx = min(1.0, max(0.0, sx))
+        return (cx, cy)
+    except Exception:
+        return domyslne
+
+
+
+def _twarz_na_kadrze(img, twarz, centering=(0.5, 0.38), sw=None, sh=None):
+    """Gdzie w GOTOWYM kadrze wyląduje twarz — zwraca (y1, y2) w pikselach albo None.
+
+    ⛔⛔ DLACZEGO NIE WYSTARCZY PRZESUNĄĆ KADRU: zdjęcie z telefonu ma zwykle 3:4, a kadr
+    stories 9:16. Przy takich proporcjach `ImageOps.fit` przycina wyłącznie BOKI — w pionie
+    zostaje całe zdjęcie, więc żadne `centering` nie ruszy twarzy ani o piksel. Sprawdzone
+    na renderze: kadr z ramką i bez ramki wyszły identyczne co do piksela.
+    ⭐ Dlatego robimy to samo, co format „to «X» — dopóki…": liczymy, gdzie twarz stoi
+    w gotowym kadrze, i USUWAMY STAMTĄD NAPIS. Zdjęcia nie ruszamy."""
+    try:
+        if img is None or not twarz or len(twarz) < 4:
+            return None
+        sw = sw or SW
+        sh = sh or SH
+        iw, ih = img.size
+        if iw <= 0 or ih <= 0:
+            return None
+        skala = max(sw / float(iw), sh / float(ih))
+        rw, rh = iw * skala, ih * skala
+        oy = (sh - rh) * float(centering[1] if len(centering) > 1 else 0.5)
+        y1 = oy + (float(twarz[1]) / 100.0) * rh
+        y2 = oy + ((float(twarz[1]) + float(twarz[3])) / 100.0) * rh
+        if y2 <= y1:
+            return None
+        return (max(0.0, y1), min(float(sh), y2))
+    except Exception:
+        return None
+
 def _story_crop(img, centering=(0.5, 0.38)):
     """Zdjęcie pełnoklatkowo w kadrze 9:16 (crop-to-fill). exif_transpose = poprawny obrót
     (telefony zapisują poziome/pionowe z EXIF; bez tego lądują bokiem)."""
@@ -981,15 +1036,46 @@ def _story_scrim_top(base, brand, frac=0.32, strength=0.95):
     base.alpha_composite(solid)
 
 
-def _draw_pill(base, x, y, text, font, fill, text_col, pad_x=44, pad_y=24):
+def _sklej_zdania(wiersze):
+    """Skleja osobne wiersze w jeden akapit, dbając o kropki między zdaniami.
+    ⛔ Wiersz kończący się już znakiem przestankowym (. ! ? … : ;) albo myślnikiem
+    zostaje bez zmian; do reszty dokładamy kropkę. Gwiazdki akcentu (*słowo*) są
+    przezroczyste dla tej reguły — sprawdzamy ostatni ZNACZĄCY znak."""
+    out = []
+    for w in [str(x).strip() for x in (wiersze or []) if str(x).strip()]:
+        rdzen = w.rstrip("*").rstrip()
+        if rdzen and rdzen[-1] not in ".!?…:;–—,":
+            gwiazdki = len(w) - len(w.rstrip("*"))
+            w = rdzen + "." + ("*" * gwiazdki)
+        out.append(w)
+    return " ".join(out).strip()
+
+
+def _draw_pill(base, x, y, text, font, fill, text_col, pad_x=44, pad_y=24, max_w=None):
     """Jeden zaokrąglony 'przycisk' (CTA/akcent) — jedyny wypełniony element, przez co
-    się wyróżnia; reszta tekstu leży bezpośrednio na zdjęciu."""
+    się wyróżnia; reszta tekstu leży bezpośrednio na zdjęciu.
+
+    ⛔⛔⛔ TU SIEDZIAŁ „ROZJECHANY SLAJD 4". Bartek, 14.08: „Sprawdź kontrahenta na bla
+    bla bla, dane z — i tutaj nie widać. To jest złe." Pigułka liczyła szerokość jako
+    tekst + marginesy i rysowała ją BEZ ŻADNEGO OGRANICZENIA. Przy dłuższym wezwaniu
+    („Sprawdź kontrahenta na finmach.pl — dane z live API, za darmo") prostokąt wychodził
+    poza kadr 1080 px, a napis urywał się w połowie słowa. Odtworzone co do piksela.
+    ⭐ Teraz pigułka ZAWIJA tekst do dostępnej szerokości i rośnie w dół, a nie w bok."""
     d = ImageDraw.Draw(base)
-    tw = int(d.textlength(text, font=font))
-    h = int(font.size * 1.0) + 2 * pad_y
-    w = tw + 2 * pad_x
-    d.rounded_rectangle([x, y, x + w, y + h], radius=h // 2, fill=fill)
-    d.text((x + pad_x, y + pad_y - int(font.size * 0.06)), text, font=font, fill=text_col)
+    if max_w is None:
+        max_w = base.size[0] - 2 * x
+    dost = max(80, int(max_w) - 2 * pad_x)
+    linie = _wrap_plain(d, text, font, dost)
+    lh = int(font.size * 1.22)
+    tw = max(int(d.textlength(l, font=font)) for l in linie) if linie else 0
+    h = lh * max(1, len(linie)) + 2 * pad_y - int(font.size * 0.22)
+    w = min(int(max_w), tw + 2 * pad_x)
+    r = min(h // 2, int(font.size * 0.9))
+    d.rounded_rectangle([x, y, x + w, y + h], radius=r, fill=fill)
+    yy = y + pad_y - int(font.size * 0.06)
+    for l in linie:
+        d.text((x + pad_x, yy), l, font=font, fill=text_col)
+        yy += lh
     return w, h
 
 
@@ -1010,14 +1096,14 @@ def _story_progress(base, brand, idx, total, y=54):
 
 
 def render_story(brand, photo, text, out_dir, idx=1, zone="bottom", total=4,
-                 kicker=None, cta=None):
+                 kicker=None, cta=None, twarz=None):
     """FORMAT 1 (jedno zdjęcie przez całą serię, spójny szablon): pasek postępu u góry
     (element stories) + statement (duży, bold, *akcent*) w DOLNEJ CZĘŚCI (nie na samym
     dole) + opcjonalna linia dopowiedzenia + opcjonalny CTA-pill. BEZ handla i kickera
     (to nie karuzela). Tekst z \\n: 1. linia = statement, reszta = dopowiedzenie."""
     base = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
     if photo is not None:
-        _spc = _warm_grade(_story_crop(photo))
+        _spc = _warm_grade(_story_crop(photo, centering=_kadr_wg_twarzy(twarz)))
         _pb = getattr(brand, "photo_blur", 0.0)
         if _pb and _pb > 0:
             _spc = _spc.filter(ImageFilter.GaussianBlur(_pb))
@@ -1040,25 +1126,65 @@ def render_story(brand, photo, text, out_dir, idx=1, zone="bottom", total=4,
         cta = raw[-1].strip("*").strip()
         raw = raw[:-1]
     statement = raw[0] if raw else ""
-    body = " ".join(raw[1:]).strip()
+    # ⛔⛔ BRAKUJĄCE KROPKI. Bartek, 14.08: „koniec zdania: tylko produkt pod jeden konkretny
+    # cel. I dalej: bierzesz dokładnie tyle. Gdzie jest kropka między «cel» a «bierzesz»?"
+    # Generator daje każde zdanie w osobnym wierszu, a render sklejał je gołą spacją —
+    # wychodziło „…która czeka nietknięta Po spłacie limit odnawia się sam". To nie jest
+    # sprawa modelu, tylko sklejania: wiersz, który nie kończy się znakiem przestankowym,
+    # dostaje kropkę, zanim doklei się następny.
+    body = _sklej_zdania(raw[1:])
 
-    sf, sl, _ = _fit_rich(d, statement, brand.font_bold, 94, 54, 4, max_w=max_w)
+    # ⛔⛔ BIAŁE NAPISY BYŁY ZA MAŁE — I TO NIE BYŁ PRZYPADEK, TYLKO REGUŁA.
+    # Bartek, 14.08: „te napisy są bardzo małe… im więcej jest tych napisów, tym one będą
+    # mniejsze. To jest błędny mechanizm." Dokładnie tak to działało: tekst pomocniczy miał
+    # sztywny sufit TRZECH WIERSZY, więc każde dłuższe zdanie zjeżdżało do 36 px, żeby się
+    # w nich zmieścić. Zamiast tego pozwalamy tekstowi zająć więcej wierszy i trzymamy
+    # czytelny stopień pisma: 44 px zamiast 36 na dole skali, 54 zamiast 48 na górze.
+    # Kadr ma 1920 px wysokości — miejsca jest pod dostatkiem, brakowało tylko zgody.
+    sf, sl, _ = _fit_rich(d, statement, brand.font_bold, 94, 62, 5, max_w=max_w)
     slh = int(sf.size * 1.13)
     s_h = slh * max(1, len(sl))
     bf = bl = None
     b_h = 0
     if body:
-        bf, bl, _ = _fit_rich(d, body, brand.font_body, 48, 36, 3, max_w=max_w)
+        bf, bl, _ = _fit_rich(d, body, brand.font_body, 54, 44, 6, max_w=max_w)
         b_h = int(bf.size * 1.34) * len(bl)
     cta_font = _f(brand.font_bold, 42)
-    cta_h = int(cta_font.size) + 48 if cta else 0
+    # ⭐ Pigułka zawija się teraz w wiele wierszy, więc jej wysokość trzeba policzyć,
+    #    a nie zgadnąć — inaczej blok wychodzi poza dolną krawędź.
+    cta_h = 0
+    cta_linie = []
+    if cta:
+        cta_linie = _wrap_plain(d, cta, cta_font, max_w - 2 * 44)
+        cta_h = int(cta_font.size * 1.22) * max(1, len(cta_linie)) + 48 - int(cta_font.size * 0.22)
 
     gap_body, gap_cta = 24, 40
     total_h = s_h + (gap_body + b_h if body else 0) + (gap_cta + cta_h if cta else 0)
 
     # dolna część kadru, ale uniesione znad samego dołu
-    y = int(SH * 0.80) - total_h
-    y = max(int(SH * 0.44), y)
+    y = int(SH * 0.86) - total_h
+    # ⛔ Sufit 0,44 wysokości powodował, że dłuższy blok po prostu wychodził poza dół kadru.
+    #    Blok ma prawo wjechać wyżej — dopiero wtedy zaczyna brakować miejsca naprawdę.
+    y = max(int(SH * 0.26), y)
+
+    # ⭐⭐⭐ NAPIS SCHODZI Z TWARZY. Bartek, 14.08: „mapowanie twarzy się nie sprawdziło,
+    #     ponieważ nachodzi bardzo mocno na napis. Na twarz nie powinno tak być."
+    #     Ta sama reguła co w formacie „to «X» — dopóki…": rusza się NAPIS, nie zdjęcie.
+    _tw = _twarz_na_kadrze(photo, twarz, centering=_kadr_wg_twarzy(twarz)) if photo is not None else None
+    if _tw:
+        f1, f2 = _tw
+        luz = 34
+        def _koliduje(yy):
+            return not (yy + total_h <= f1 - luz or yy >= f2 + luz)
+        if _koliduje(y):
+            pod = int(f2 + luz)                       # najpierw: pod twarzą
+            nad = int(f1 - luz - total_h)             # potem: nad twarzą
+            if pod + total_h <= int(SH * 0.94):
+                y = pod
+            elif nad >= int(SH * 0.06):
+                y = nad
+            # gdy ani pod, ani nad się nie mieści — zostaje jak było; lepszy napis
+            # na skraju twarzy niż napis ucięty poza kadrem.
     x = margin
     _sst = getattr(brand, "shadow_strength", 1.0)
     # FIX (ciemny akcent marki niewidoczny na zdjęciu ze scrimem): jeśli kolor akcentu
@@ -1074,7 +1200,7 @@ def render_story(brand, photo, text, out_dir, idx=1, zone="bottom", total=4,
         y += b_h
     if cta:
         y += gap_cta
-        _draw_pill(base, x, y, cta, cta_font, accent, (255, 255, 255))
+        _draw_pill(base, x, y, cta, cta_font, accent, (255, 255, 255), max_w=max_w)
 
     os.makedirs(out_dir, exist_ok=True)
     fp = os.path.join(out_dir, f"story_{idx:02d}.png")
@@ -1144,7 +1270,7 @@ _NATIVE_LAYOUTS = [
 ]
 
 
-def render_story_native(brand, photo, lines, out_dir, idx=1, zone="bottom", layout=None, seed=0):
+def render_story_native(brand, photo, lines, out_dir, idx=1, zone="bottom", layout=None, seed=0, twarz=None):
     """FORMAT 2 (autentyczny, storytellingowy): zdjęcie + WIĘCEJ tekstu w MIKSIE stylów,
     jakby klient sam zrobił w Canvie/IG. 1. linia = nagłówek (duży, bez tła, cień).
     Kolejne linie = białe boksy (ciemny tekst). `~linia~` = bez tła (biały tekst).
@@ -1156,7 +1282,7 @@ def render_story_native(brand, photo, lines, out_dir, idx=1, zone="bottom", layo
     base = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
     has_photo = photo is not None
     if has_photo:
-        _npc = _story_crop(photo)
+        _npc = _story_crop(photo, centering=_kadr_wg_twarzy(twarz))
         _pb = getattr(brand, "photo_blur", 0.0)
         if _pb and _pb > 0:
             _npc = _npc.filter(ImageFilter.GaussianBlur(_pb))
@@ -1276,7 +1402,7 @@ def render_story_native(brand, photo, lines, out_dir, idx=1, zone="bottom", layo
     return fp
 
 
-def render_stories(brand, items, out_dir, photos=None, seed=None):
+def render_stories(brand, items, out_dir, photos=None, seed=None, twarze=None):
     """items: lista dictów {'text', 'format'('tip'|'native'), 'photo'} albo str.
     format 'native' -> render_story_native (linie tekstu rozdzielone \\n; *linia* = akcent).
     format 'tip' (domyślny) -> render_story (zdjęcie + tekst brandowy nisko).
@@ -1289,6 +1415,9 @@ def render_stories(brand, items, out_dir, photos=None, seed=None):
         for c in os.path.basename(os.path.normpath(out_dir)):
             seed = (seed * 31 + ord(c)) % 100000
     photos = photos or []
+    # ⭐ Ramki twarzy idą RÓWNOLEGLE do zdjęć — ta sama rotacja, ten sam indeks.
+    #    Pusta lista = zachowanie jak dotąd (kadr na sztywno), więc nic się nie psuje.
+    twarze = twarze or []
     paths = []
     for i, it in enumerate(items, start=1):
         ph, fmt, zone = None, "tip", None
@@ -1303,8 +1432,12 @@ def render_stories(brand, items, out_dir, photos=None, seed=None):
             text = str(it)
         eff = _apply_look(brand, look or {})
         _ctx.text_scale = getattr(eff, "text_scale", 1.0)
+        tw = it.get("twarz") if isinstance(it, dict) else None
         if ph is None and photos:
-            ph = photos[(i - 1) % len(photos)]
+            k = (i - 1) % len(photos)
+            ph = photos[k]
+            if tw is None and k < len(twarze):
+                tw = twarze[k]
         if isinstance(ph, str):
             try:
                 ph = Image.open(ph)
@@ -1316,9 +1449,9 @@ def render_stories(brand, items, out_dir, photos=None, seed=None):
             zone = "bottom" if ph is not None else "full"
         if fmt == "native":
             lines = [l for l in str(text).split("\n")]
-            paths.append(render_story_native(eff, ph, lines, out_dir, idx=i, zone=zone, seed=seed))
+            paths.append(render_story_native(eff, ph, lines, out_dir, idx=i, zone=zone, seed=seed, twarz=tw))
         else:
-            paths.append(render_story(eff, ph, text, out_dir, idx=i, zone=zone))
+            paths.append(render_story(eff, ph, text, out_dir, idx=i, zone=zone, twarz=tw))
     _ctx.text_scale = 1.0
     return paths
 

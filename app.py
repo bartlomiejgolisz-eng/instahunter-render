@@ -566,6 +566,7 @@ async def render_story_endpoint(
     bg: str = "", accent: str = "", taupe: str = "", white: str = "", handle: str = "",
     font: str = "",
     photo: List[str] = Query(default=[]),
+    twarz: List[str] = Query(default=[]),
     look: str = "",
     job_id: Optional[str] = None,
 ):
@@ -613,18 +614,31 @@ async def render_story_endpoint(
         taupe=_hex_or("#8A7A6A", taupe), white=_hex_or("#FFFFFF", white),
         handle=(handle.strip() or "@klient"), font_family=font.strip(),
     )
-    photos = []
-    for u in photo:
+    # ⭐ RAMKI TWARZY. `twarz` jedzie RÓWNOLEGLE do `photo`: i-ta ramka opisuje i-te zdjęcie,
+    #    format „x,y,w,h" w procentach (to samo, co w polu „Twarz — ramka" w bazie).
+    #    Pusty łańcuch = brak ramki dla tego zdjęcia. Gdy parametru nie ma w ogóle, kadr
+    #    wycinany jest jak dotąd — czyli stary zamawiający nic nie traci.
+    def _ramka(txt):
+        try:
+            v = [float(x) for x in str(txt or "").replace(";", ",").split(",")[:4]]
+            return v if len(v) == 4 and v[2] > 0 and v[3] > 0 else None
+        except Exception:
+            return None
+
+    photos, twarze = [], []
+    for i, u in enumerate(photo):
         img = _download(u)
         if img is not None:
             photos.append(img)
+            twarze.append(_ramka(twarz[i]) if i < len(twarz) else None)
 
     look_cfg = _merge_look(_parse_look(look), _extract_look_token(raw))
     if look_cfg.get("global"):
         brand = R._apply_look(brand, look_cfg["global"])
     _attach_slide_looks(items, look_cfg.get("slides"))
 
-    paths = R.render_stories(brand, items, out_dir, photos=photos or None)
+    paths = R.render_stories(brand, items, out_dir, photos=photos or None,
+                             twarze=twarze or None)
     urls = [f"{BASE_URL}/static/{job}/{os.path.basename(p)}" for p in paths]
     return JSONResponse({"job_id": job, "count": len(urls), "stories": urls,
                          "texts": [it["text"] for it in items]})
