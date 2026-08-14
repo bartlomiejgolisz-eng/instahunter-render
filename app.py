@@ -622,6 +622,7 @@ async def render_tokens_endpoint(
     font: str = "",
     photo: List[str] = Query(default=[]),
     twarz: List[str] = Query(default=[]),
+    photoid: List[str] = Query(default=[]),
     avatar: str = "",
     look: str = "",
     job_id: Optional[str] = None,
@@ -646,12 +647,20 @@ async def render_tokens_endpoint(
 
     # ⭐ RAMKI TWARZY na okładce karuzeli. `twarz` jedzie RÓWNOLEGLE do `photo` — i-ta ramka
     #   opisuje i-te zdjęcie. Gdy parametru nie ma, kadr wycinany jest jak dotąd.
-    photos, twarze = [], []
+    # ⛔⛔ ZMIERZONE 14.08: Make przysyłał DOKŁADNIE JEDNO zdjęcie okładki (moduł 8 miał
+    #   `maxRecords: 1`), więc wybieranie zdjęcia po stronie renderu nie miało z czego wybierać.
+    #   Skutek: karta „Limit faktoringowy większy niż potrzeba" — zdjęcie gosia-06 (twarz duża,
+    #   ramka 33,33,42,33) w ogóle nie da się ustawić nad napisem, a nie było alternatywy.
+    #   Teraz Make przysyła kilka zdjęć naraz; puste pozycje (klient ma mniej zdjęć) pomijamy.
+    photos, twarze, idki = [], [], []
     for i, u in enumerate(photo):
+        if not str(u or "").strip():
+            continue
         img = _download(u)
         if img is not None:
             photos.append(img)
             twarze.append(_ramka(twarz[i]) if i < len(twarz) else None)
+            idki.append(str(photoid[i]).strip() if i < len(photoid) else "")
     avatar_img = _download(avatar) if avatar.strip() else None
 
     look_cfg = _merge_look(_parse_look(look), _extract_look_token(raw))
@@ -659,15 +668,22 @@ async def render_tokens_endpoint(
         brand = R._apply_look(brand, look_cfg["global"])
     _attach_slide_looks(slides, look_cfg.get("slides"))
 
+    # ⭐ `info` wraca z renderu z indeksem zdjęcia, które FAKTYCZNIE poszło na okładkę.
+    #   Bez tego Make stemplowałby rotację i zapisywał w karcie zdjęcie nr 1, nawet gdy
+    #   render wziął nr 3 — czyli rotacja okładek kręciłaby się w kółko po tym samym pliku.
+    info = {}
     paths = R.render_carousel(brand, slides, out_dir, photos=photos or None, avatar=avatar_img,
-                              twarze=twarze or None)
+                              twarze=twarze or None, info=info)
     urls = [f"{BASE_URL}/static/{job}/{os.path.basename(p)}" for p in paths]
     title = next((s.get("title", "") for s in slides if s.get("type") == "cover"), "")
     readable = build_readable(slides)
+    _i = info.get("okladka")
     return JSONResponse({
         "job_id": job, "count": len(urls), "slides": urls,
         "title": title, "temat": temat, "caption": caption,
         "readable": readable,
+        "okladka_indeks": (_i + 1) if isinstance(_i, int) else 0,
+        "okladka_id": (idki[_i] if isinstance(_i, int) and _i < len(idki) else ""),
     })
 
 
