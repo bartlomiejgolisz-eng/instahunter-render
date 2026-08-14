@@ -224,7 +224,7 @@ _TOKEN_RE = re.compile(r"\[\[([A-ZĄĆĘŁŃÓŚŹŻ_]+)\]\]")
 
 
 # typy tokenów, które MOGĄ wystąpić wielokrotnie w jednym slajdzie -> lista
-_REPEAT_TOKENS = {"PUNKT", "SLUPEK"}
+_REPEAT_TOKENS = {"PUNKT", "SLUPEK", "PUNKT_L", "PUNKT_P", "KROK"}
 # mapowanie wartości [[TYP]] (PL/EN) -> wewnętrzny typ renderu
 _TYP_MAP = {
     "cover": "cover", "okladka": "cover", "okładka": "cover",
@@ -233,6 +233,12 @@ _TYP_MAP = {
     "statystyka": "stat", "stat": "stat",
     "wykres": "chart", "chart": "chart",
     "tresc": "content", "treść": "content", "content": "content",
+    # ⭐ TRZY NOWE RODZAJE SLAJDÓW (Bartek, 14.08: „większość slajdów jest taka sama…
+    #    dołóżmy jeszcze ze dwa, trzy rodzaje i żonglujmy nimi naprzemiennie")
+    "porownanie": "porownanie", "porównanie": "porownanie", "compare": "porownanie",
+    "vs": "porownanie", "zestawienie": "porownanie",
+    "kroki": "kroki", "krok": "kroki", "steps": "kroki", "os": "kroki", "oś": "kroki",
+    "cytat": "cytat", "quote": "cytat",
 }
 
 
@@ -307,6 +313,12 @@ def parse_carousel_tokens(raw: str):
             return "cover"
         if "CTA" in s:
             return "cta"
+        if "CYTAT" in s:
+            return "cytat"
+        if "KROK" in s:
+            return "kroki"
+        if "PUNKT_L" in s or "PUNKT_P" in s or "PRAWA" in s or "LEWA" in s:
+            return "porownanie"
         if "FIGURA" in s:
             return "stat"
         if "SLUPEK" in s:
@@ -353,6 +365,33 @@ def parse_carousel_tokens(raw: str):
                 "kicker": s.get("KICKER", "") or None,
                 "heading": s.get("NAGLOWEK", ""),
                 "bars": [_parse_bar(b) for b in s.get("SLUPEK", []) if str(b).strip()],
+            })
+        elif typ == "porownanie":
+            num += 1
+            slides.append({
+                "type": "porownanie",
+                "kicker": s.get("KICKER", "") or None,
+                "heading": s.get("NAGLOWEK", ""),
+                "lewa": s.get("LEWA", ""),
+                "punkty_l": [i for i in s.get("PUNKT_L", []) if str(i).strip()],
+                "prawa": s.get("PRAWA", ""),
+                "punkty_p": [i for i in s.get("PUNKT_P", []) if str(i).strip()],
+            })
+        elif typ == "kroki":
+            num += 1
+            slides.append({
+                "type": "kroki",
+                "kicker": s.get("KICKER", "") or None,
+                "heading": s.get("NAGLOWEK", ""),
+                "kroki": [i for i in s.get("KROK", []) if str(i).strip()],
+            })
+        elif typ == "cytat":
+            num += 1
+            slides.append({
+                "type": "cytat",
+                "kicker": s.get("KICKER", "") or None,
+                "cytat": s.get("CYTAT", "") or s.get("TRESC", ""),
+                "autor": s.get("AUTOR", ""),
             })
         elif typ == "list":
             num += 1
@@ -420,6 +459,32 @@ def build_readable(slides):
                 lab = b[0] if isinstance(b, (list, tuple)) and b else ""
                 val = b[1] if isinstance(b, (list, tuple)) and len(b) > 1 else ""
                 lines.append("  • " + _clean(lab) + ": " + str(val) + "%")
+        elif t == "porownanie":
+            n += 1
+            kick = _clean(s.get("kicker") or "")
+            head = _clean(s.get("heading", ""))
+            lines.append("SLAJD " + str(n) + (" (" + kick + ")" if kick else "") +
+                         " — PORÓWNANIE" + (": " + head if head else ""))
+            lines.append("  " + (_clean(s.get("lewa")) or "Tak myślisz") + ":")
+            for it in s.get("punkty_l", []):
+                lines.append("    ✗ " + _clean(it))
+            lines.append("  " + (_clean(s.get("prawa")) or "Jak jest") + ":")
+            for it in s.get("punkty_p", []):
+                lines.append("    ✓ " + _clean(it))
+        elif t == "kroki":
+            n += 1
+            kick = _clean(s.get("kicker") or "")
+            head = _clean(s.get("heading", ""))
+            lines.append("SLAJD " + str(n) + (" (" + kick + ")" if kick else "") +
+                         " — KROKI" + (": " + head if head else ""))
+            for i_k, it in enumerate(s.get("kroki", []), start=1):
+                lines.append("  " + str(i_k) + ". " + _clean(it).replace("|", "—"))
+        elif t == "cytat":
+            n += 1
+            lines.append("SLAJD " + str(n) + " — CYTAT")
+            lines.append("  \u201e" + _clean(s.get("cytat", "")) + "\u201d")
+            if s.get("autor"):
+                lines.append("  — " + _clean(s["autor"]))
         elif t == "list":
             n += 1
             kick = _clean(s.get("kicker") or "")
