@@ -97,29 +97,108 @@ FONT_PAIRINGS = {
     "caladea":       {"head": "Caladea-Bold.ttf",      "body": "Lato-Regular.ttf"},  # serif + sans
     "dejavu":        {"head": "DejaVuSans-Bold.ttf",   "body": "Lato-Regular.ttf"},
 }
-# Aliasy nazw z brandbooków -> najbliższy metrycznie krój wiodący w bibliotece.
-FONT_ALIASES = {
-    "grotesk": "space grotesk", "spacegrotesk": "space grotesk", "space-grotesk": "space grotesk",
-    "poppins": "space grotesk", "montserrat": "montserrat", "geometric": "space grotesk",
-    "lato": "lato", "opensans": "lato", "open sans": "lato", "sans": "lato", "roboto": "lato",
-    "calibri": "carlito", "carlito": "carlito",
-    "cambria": "caladea", "caladea": "caladea", "georgia": "caladea", "times": "caladea",
-    "times new roman": "caladea", "serif": "caladea", "playfair": "caladea",
-    "arial": "dejavu", "helvetica": "dejavu", "dejavu": "dejavu",
+
+# ⭐⭐⭐ 15.08 (s286) — DWIE CZCIONKI KLIENTA, TAK SAMO JAK W FORMACIE z2. DECYZJA BARTKA.
+# Bartek zauważył, że u Małgorzaty format z cudzysłowem i format tokenowy mają INNY krój.
+# Miał rację i przyczyna była taka: format z2 czyta OBA pola profilu („Brand — czcionka
+# nagłówkowa" i „Brand — czcionka tekstowa"), a ten renderer czytał tylko pierwsze i sam
+# dobierał do niego drugie z tabeli par. U Małgorzaty (nagłówki Montserrat, tekst Poppins)
+# dawało to Montserrat w treści zamiast Poppins — i dwie różne grubości.
+# Od s286 oba renderery czytają te same dwa pola i mapują je na te same pliki.
+#
+# ⛔ Nazwy plików są w tym repo NIEJEDNOLITE (historycznie): część ma myślnik
+# („Montserrat-Bold.ttf"), część podkreślnik z wagą („Poppins_600SemiBold.ttf").
+# Dlatego jedna tabela na krój, z osobnym plikiem na nagłówek i na tekst.
+KROJE = {
+    "anton":            {"head": "Anton_400Regular.ttf",           "body": "Anton_400Regular.ttf"},
+    "archivo black":    {"head": "ArchivoBlack_400Regular.ttf",    "body": "ArchivoBlack_400Regular.ttf"},
+    "playfair display": {"head": "PlayfairDisplay_800ExtraBold.ttf", "body": "PlayfairDisplay_800ExtraBold.ttf"},
+    "fraunces":         {"head": "Fraunces_700Bold.ttf",           "body": "Fraunces_700Bold.ttf"},
+    "oswald":           {"head": "Oswald_700Bold.ttf",             "body": "Oswald_700Bold.ttf"},
+    "poppins":          {"head": "Poppins_600SemiBold.ttf",        "body": "Poppins_600SemiBold.ttf"},
+    "inter":            {"head": "Inter_600SemiBold.ttf",          "body": "Inter_600SemiBold.ttf"},
+    "barlow":           {"head": "Barlow_600SemiBold.ttf",         "body": "Barlow_600SemiBold.ttf"},
+    "montserrat":       {"head": "Montserrat-Bold.ttf",            "body": "Montserrat-Regular.ttf"},
+    "space grotesk":    {"head": "SpaceGrotesk-Bold.ttf",          "body": "SpaceGrotesk-Regular.ttf"},
+    "lato":             {"head": "Lato-Bold.ttf",                  "body": "Lato-Regular.ttf"},
+    "carlito":          {"head": "Carlito-Bold.ttf",               "body": "Carlito-Regular.ttf"},
+    "caladea":          {"head": "Caladea-Bold.ttf",               "body": "Caladea-Regular.ttf"},
+    "dejavu":           {"head": "DejaVuSans-Bold.ttf",            "body": "DejaVuSans.ttf"},
 }
 
+# Aliasy nazw z profili klientów -> najbliższy krój w bibliotece.
+# ⛔ 15.08 (s286): „poppins" NIE jest już aliasem na Space Grotesk — mamy plik Poppins
+# w repo i format z2 od zawsze go używał. To była cicha przyczyna części różnic
+# między jednym a drugim formatem u tego samego klienta.
+FONT_ALIASES = {
+    "grotesk": "space grotesk", "spacegrotesk": "space grotesk", "space-grotesk": "space grotesk",
+    "geometric": "space grotesk",
+    "opensans": "lato", "open sans": "lato", "sans": "lato", "roboto": "lato",
+    "calibri": "carlito",
+    "cambria": "caladea", "georgia": "caladea", "times": "caladea",
+    "times new roman": "caladea", "serif": "caladea",
+    "playfair": "playfair display", "archivo": "archivo black",
+    "arial": "dejavu", "helvetica": "dejavu",
+}
 
-def resolve_font_family(name):
-    """Nazwa kroju (z brandbooka klienta) -> PARA ścieżek {head, body} do złożenia.
-    Puste/nieznane -> domyślna para (Space Grotesk + Lato). Nigdy nie zawodzi."""
+# ⭐ NEUTRALNY PARTNER — używany, gdy klient ma tylko jedną czcionkę.
+# Decyzja Bartka 15.08: „zawsze osoba musi mieć dwie czcionki; jeżeli nie ma drugiej,
+# to jest jej nadawana automatycznie, bez pytania i bez informowania".
+# Dobór: do krojów ozdobnych i ciężkich dokładamy spokojny grotesk do czytania,
+# do serifów — sans, a kroje, które same są czytelne, zostają przy sobie.
+# ⭐ 15.08 (s286) — SIATKA BEZPIECZEŃSTWA: krój plakatowy nie składa akapitów.
+# ⛔ SPROSTOWANIE DO WŁASNEJ POMYŁKI, żeby nikt jej nie powtórzył: przez chwilę
+# uznałem, że pięć z sześciu profili ma zamienione pola czcionek. NIEPRAWDA — pomyliłem
+# identyfikatory pól przy odczycie (API zwraca wartości po ID, nie w kolejności zapytania).
+# Sprawdzone wprost: fldZIoOBRHwa3I2kS = „Brand — czcionka nagłówkowa",
+# fldNxlvE8GnDp9nsc = „Brand — czcionka tekstowa". Wszystkie sześć profili ma je DOBRZE:
+# krój ozdobny w nagłówkach (Anton, Archivo Black, Playfair, Fraunces, Oswald),
+# spokojny w tekście (Barlow, Inter, Poppins, Montserrat).
+# Ta lista zostaje mimo to — jako zabezpieczenie na wypadek, gdyby ktoś kiedyś wpisał
+# krój plakatowy w pole tekstowe. Dziś nie zmienia niczyjego wyglądu.
+OZDOBNE_NIE_DO_CZYTANIA = {
+    "anton", "archivo black", "playfair display", "fraunces", "oswald",
+}
+
+PARTNER_DO_CZYTANIA = {
+    "anton": "inter", "archivo black": "inter", "oswald": "inter",
+    "playfair display": "lato", "fraunces": "lato", "caladea": "lato",
+    "poppins": "poppins", "inter": "inter", "barlow": "barlow",
+    "montserrat": "montserrat", "space grotesk": "space grotesk",
+    "lato": "lato", "carlito": "carlito", "dejavu": "dejavu",
+}
+
+def _klucz_kroju(name):
     key = (name or "").strip().lower()
-    key = FONT_ALIASES.get(key, key)
-    pair = FONT_PAIRINGS.get(key) or FONT_PAIRINGS["space grotesk"]
+    return FONT_ALIASES.get(key, key)
 
-    def _path(fn):
-        p = os.path.join(_FONT_DIR, fn)
-        return p if os.path.exists(p) else FONT_BOLD
-    return {"head": _path(pair["head"]), "body": _path(pair["body"])}
+
+def _plik(nazwa_pliku):
+    p = os.path.join(_FONT_DIR, nazwa_pliku)
+    return p if os.path.exists(p) else FONT_BOLD
+
+
+def resolve_font_family(name, name_body=""):
+    """Dwa pola z profilu klienta -> PARA ścieżek {head, body}.
+
+    ⭐ 15.08 (s286): drugi argument to „Brand — czcionka tekstowa". Gdy jest pusty
+    albo nieznany, dobieramy neutralnego partnera do kroju nagłówkowego — cicho,
+    bez pytania. Funkcja NIGDY nie zawodzi: nieznana nazwa schodzi na Space Grotesk.
+    ⛔ Sygnatura z jednym argumentem dalej działa (stare wywołania nie pękną).
+    """
+    k_head = _klucz_kroju(name)
+    krój_h = KROJE.get(k_head) or FONT_PAIRINGS.get(k_head) or KROJE["space grotesk"]
+
+    k_body = _klucz_kroju(name_body)
+    if k_body in OZDOBNE_NIE_DO_CZYTANIA:
+        k_body = ""          # krój plakatowy w polu tekstowym = traktujemy jak brak
+    if k_body and k_body in KROJE:
+        plik_body = KROJE[k_body]["body"]
+    else:
+        partner = PARTNER_DO_CZYTANIA.get(k_head, "lato")
+        plik_body = KROJE.get(partner, KROJE["lato"])["body"]
+
+    return {"head": _plik(krój_h["head"]), "body": _plik(plik_body)}
 
 
 # ---------- BRAND ----------
@@ -150,12 +229,13 @@ class Brand:
     font_bold: str = FONT_BOLD
     font_med: str = FONT_MED
     font_body: str = FONT_BODY
-    font_family: str = ""        # nazwa kroju z brandbooka klienta (puste = Space Grotesk)
+    font_family: str = ""        # „Brand — czcionka nagłówkowa" (puste = Space Grotesk)
+    font_family_body: str = ""   # „Brand — czcionka tekstowa" (puste = neutralny partner)
 
     def __post_init__(self):
         # PARA fontów per klient: nagłówek (head) + tekst (body) z brandbooka. Zawsze dwa
         # komponujące się kroje (nie jeden wszędzie). Puste = domyślna para Space Grotesk+Lato.
-        fam = resolve_font_family(self.font_family)
+        fam = resolve_font_family(self.font_family, self.font_family_body)
         self.font_heavy = fam["head"]
         self.font_bold = fam["head"]
         self.font_med = fam["head"]

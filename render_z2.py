@@ -182,8 +182,23 @@ _ZAPASOWA = "DejaVuSans-Bold.ttf"
 _cache_czcionek = {}
 
 
+# ⭐ 15.08 (s286) — TA SAMA SIATKA BEZPIECZEŃSTWA, CO W render.py.
+# ⛔ Sprostowanie: profile mają pola czcionek WYPEŁNIONE POPRAWNIE (ozdobny w nagłówku,
+# spokojny w tekście) — moje wcześniejsze „pięć z sześciu ma zamienione" brało się
+# z pomylenia identyfikatorów pól przy odczycie. Ta lista jest zabezpieczeniem na
+# przyszłość, dziś nie zmienia niczyjego wyglądu.
+# ⛔ Dotyczy WYŁĄCZNIE tekstu do czytania. Nagłówki zostają dokładnie takie, jak w profilu.
+OZDOBNE_NIE_DO_CZYTANIA = {"anton", "archivo black", "playfair display", "fraunces", "oswald"}
+PARTNER_DO_CZYTANIA = {
+    "anton": "inter", "archivo black": "inter", "oswald": "inter",
+    "playfair display": "poppins", "fraunces": "poppins",
+}
+
+
 def _sciezka_czcionki(rodzina: str, naglowek: bool) -> str:
     k = (rodzina or "").strip().lower()
+    if not naglowek and k in OZDOBNE_NIE_DO_CZYTANIA:
+        k = PARTNER_DO_CZYTANIA.get(k, "inter")
     tab = PLIKI_NAGLOWKA if naglowek else PLIKI_TRESCI
     plik = tab.get(k)
     if plik:

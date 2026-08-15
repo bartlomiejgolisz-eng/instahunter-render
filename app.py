@@ -620,6 +620,7 @@ async def render_tokens_endpoint(
     bg: str = "", bg_alt: str = "", accent: str = "", taupe: str = "",
     white: str = "", handle: str = "", glow: bool = True, ornaments: bool = True,
     font: str = "",
+    font_tresci: str = "",
     photo: List[str] = Query(default=[]),
     twarz: List[str] = Query(default=[]),
     photoid: List[str] = Query(default=[]),
@@ -642,7 +643,7 @@ async def render_tokens_endpoint(
         bg=_hex_or("#111008", bg), bg_alt=_hex_or("#F5EFE2", bg_alt),
         accent=_hex_or("#E8402A", accent), taupe=_hex_or("#8A7A6A", taupe),
         white=_hex_or("#FFFFFF", white), handle=(handle.strip() or "@klient"),
-        glow=glow, ornaments=ornaments, font_family=font.strip(),
+        glow=glow, ornaments=ornaments, font_family=font.strip(), font_family_body=font_tresci.strip(),
     )
 
     # ⭐ RAMKI TWARZY na okładce karuzeli. `twarz` jedzie RÓWNOLEGLE do `photo` — i-ta ramka
@@ -693,6 +694,7 @@ async def render_story_endpoint(
     x_api_key: str = Header(default=""),
     bg: str = "", accent: str = "", taupe: str = "", white: str = "", handle: str = "",
     font: str = "",
+    font_tresci: str = "",
     photo: List[str] = Query(default=[]),
     twarz: List[str] = Query(default=[]),
     look: str = "",
@@ -740,7 +742,7 @@ async def render_story_endpoint(
     brand = R.Brand(
         bg=_hex_or("#111008", bg), accent=_hex_or("#E8402A", accent),
         taupe=_hex_or("#8A7A6A", taupe), white=_hex_or("#FFFFFF", white),
-        handle=(handle.strip() or "@klient"), font_family=font.strip(),
+        handle=(handle.strip() or "@klient"), font_family=font.strip(), font_family_body=font_tresci.strip(),
     )
     # ⭐ RAMKI TWARZY. `twarz` jedzie RÓWNOLEGLE do `photo`: i-ta ramka opisuje i-te zdjęcie,
     #    format „x,y,w,h" w procentach (to samo, co w polu „Twarz — ramka" w bazie).
