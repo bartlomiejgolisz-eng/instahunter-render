@@ -105,12 +105,21 @@ def drabinka_auto(i: int):
 DRABINKI = {"domyslna": drabinka_domyslna, "wysoko": drabinka_wysoko,
             "auto": drabinka_auto}
 
-# Ile miejsca zostawiamy pod twarzą i przy dolnej krawędzi, gdy liczymy pozycję „auto".
-# ⛔ To NIE są liczby z sufitu: 28 px to mniej więcej połowa wysokości pisma treści,
-# a 40 px u dołu odpowiada dotychczasowemu zapasowi (24 px) plus margines na cień.
+# Ile miejsca zostawiamy pod twarzą i przy krawędziach kadru, gdy liczymy pozycję „auto".
+# ⛔ 28 px to mniej więcej połowa wysokości pisma treści.
+# ⭐⭐ 15.08 (s281) — MARGINES_DOLNY: 40 → 104 px. Bartek, po obejrzeniu okładki
+# „Finansowanie pod okazję zakupową": „nie ma praktycznie wcale wolnej przestrzeni na
+# dole pod napisem". Miał rację i 40 px było liczbą techniczną (zapas 24 px + cień),
+# a nie marginesem kompozycyjnym. 104 px to ok. 7,7% wysokości kadru — tyle samo, co
+# marginesy boczne (9% z lewej, 7% z prawej), więc napis oddycha tak samo z każdej strony.
 MARGINES_OKLADKI = 9.0
 ODSTEP_OD_TWARZY = 28.0
-MARGINES_DOLNY = 40.0
+MARGINES_DOLNY = 104.0
+MARGINES_GORNY = 72.0
+# Awaryjne, ciaśniejsze marginesy — używane dopiero wtedy, gdy przy pełnych blok nie
+# mieści się ani nad twarzą, ani pod nią. Lepiej ciaśniejsza okładka niż brak karuzeli.
+MARGINES_DOLNY_MIN = 56.0
+MARGINES_GORNY_MIN = 40.0
 
 # Które plansze chcą człowieka. Reguła Bartka: okładka ZAWSZE z człowiekiem,
 # co najmniej 40% plansz z człowiekiem.
@@ -438,13 +447,41 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
         # a generator brał pierwszą, na której napis nie dotykał twarzy.
         # Teraz: bierzemy dolną krawędź twarzy, liczymy wolne pole do dołu kadru
         # i wstawiamy w jego środek zmierzony blok tekstu.
+        # ⭐⭐ 15.08 (s281) — DWA POLA ZAMIAST JEDNEGO, I ŻADNEGO DOKLEJANIA DO KRAWĘDZI.
+        # Co było źle w s280: liczyliśmy WYŁĄCZNIE pole POD twarzą, a gdy blok się w nim
+        # nie mieścił, dosuwaliśmy go do dolnej krawędzi (`dol - wys`). Na zdjęciu, gdzie
+        # twarz siedzi nisko, wychodziła okładka z napisem przyklejonym do dołu — dokładnie
+        # to, co Bartek zobaczył na „Finansowanie pod okazję zakupową".
+        # Teraz: mierzymy OBA wolne pola (nad twarzą i pod twarzą), bierzemy to, w którym
+        # blok naprawdę się mieści z marginesami, a przy dwóch pasujących — większe.
+        # Jak nie mieści się w żadnym nawet przy ciaśniejszych marginesach, ta pozycja
+        # PRZEPADA (`zaDuze`) i drabinka próbuje dalej: inny kadr, inna pozycja, inne zdjęcie.
+        # ⛔ Nigdy więcej dosuwania do krawędzi — lepiej inne zdjęcie niż zła kompozycja.
         if tryb == "auto":
             wys = r0["dol_t"] - r0["gorna_t"]
-            ty2 = (oy + (tw[1] + tw[3]) / 100.0 * rh) if tw else 0.0
-            gora = max(24.0, ty2 + ODSTEP_OD_TWARZY)
-            dol = H - MARGINES_DOLNY
-            wolne = dol - gora
-            cel = gora + (wolne - wys) / 2.0 if wolne >= wys else max(24.0, dol - wys)
+            ty1f = (oy + tw[1] / 100.0 * rh) if tw else 0.0
+            ty2f = (oy + (tw[1] + tw[3]) / 100.0 * rh) if tw else 0.0
+
+            def pola(mg, md):
+                """Wolne pola [(góra, dół)] przy zadanych marginesach kadru."""
+                pod = (max(mg, ty2f + ODSTEP_OD_TWARZY) if tw else mg, H - md)
+                if not tw:
+                    return [pod]
+                nad = (mg, min(H - md, ty1f - ODSTEP_OD_TWARZY))
+                return [pod, nad]
+
+            wybrane = None
+            for mg, md in ((MARGINES_GORNY, MARGINES_DOLNY),
+                           (MARGINES_GORNY_MIN, MARGINES_DOLNY_MIN)):
+                pasuje = [(g, d) for (g, d) in pola(mg, md) if d - g >= wys]
+                if pasuje:
+                    wybrane = max(pasuje, key=lambda t: t[1] - t[0])
+                    break
+            if wybrane is None:
+                return {"zaDuze": True}
+
+            gora, dol = wybrane
+            cel = gora + (dol - gora - wys) / 2.0
             przesun = cel - r0["gorna_t"]
             if abs(przesun) > 1:
                 r0 = zloz(y_base + przesun)
