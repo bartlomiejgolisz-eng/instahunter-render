@@ -119,16 +119,15 @@ MARGINES_DOLNY = 104.0
 # „proponuję, żeby przerwa była tak samo od dołu, jak i od góry. Od góry może być
 # troszeczkę mniejsza, natomiast generalnie nie może być tak, że przy samej górze
 # też się pojawia napis".
-# ⛔ DLACZEGO 130, A NIE 88: te liczby odnoszą się do PUDEŁKA LINII (od linii bazowej
-# w górę o 0,80 stopnia pisma), a nie do faktycznych pikseli liter. Przy stopniu 92 px
-# wersaliki i cudzysłów wychodzą ok. 44 px ponad to pudełko. Zmierzone: przy stałej 88
-# widoczny odstęp od górnej krawędzi wynosił 44 px, przy 130 wynosi ok. 86 px — czyli
-# „troszeczkę mniej niż dolne 104". Zmieniając tę liczbę, MIERZYĆ piksele, nie ufać nazwie.
-MARGINES_GORNY = 130.0
+# ⭐ s285: te liczby znaczą PIKSELE OD KRAWĘDZI KADRU DO PIERWSZEGO PIKSELA NAPISU.
+# Do s284 odnosiły się do nominalnego pudełka linii i myliły o ok. 44 px — dlatego
+# „margines 88" dawał napis 44 px od krawędzi. Teraz blok mierzy `textbbox`, czyli
+# faktyczny obrys liter razem z podkładem.
+MARGINES_GORNY = 88.0
 # Awaryjne, ciaśniejsze marginesy — używane dopiero wtedy, gdy przy pełnych blok nie
 # mieści się ani nad twarzą, ani pod nią. Lepiej ciaśniejsza okładka niż brak karuzeli.
-MARGINES_DOLNY_MIN = 56.0
-MARGINES_GORNY_MIN = 48.0
+MARGINES_DOLNY_MIN = 72.0
+MARGINES_GORNY_MIN = 64.0
 
 # Które plansze chcą człowieka. Reguła Bartka: okładka ZAWSZE z człowiekiem,
 # co najmniej 40% plansz z człowiekiem.
@@ -407,7 +406,16 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
                 f = f_nag(S1)
                 x2 = L
                 y = y_naglowka + S1 * 0.78
-                y_top = y - S1 * 0.80
+                # ⭐⭐⭐ 15.08 (s285) — MIERZYMY ATRAMENT, NIE PUDEŁKO LINII.
+                # Do s284 górna krawędź bloku brała się z wzoru `y - 0,80 × stopień pisma`,
+                # czyli z NOMINALNEJ linii pisma. Prawdziwe litery (wersaliki, „ł", cudzysłów,
+                # polskie ogonki) wychodzą ponad to nawet o 44 px przy stopniu 92. Efekt:
+                # margines nazywał się 88, a napis stał 44 px od krawędzi — i tak Bartek
+                # dostał okładkę Łukasza z napisem „przy samej górze", mimo że reguła
+                # marginesu formalnie była spełniona.
+                # `textbbox` z tym samym anchorem, którym rysujemy, zwraca faktyczny obrys
+                # liter. Od tej chwili liczby w stałych MARGINES_* znaczą to, co widać.
+                ink_y1, ink_y2 = 10 ** 9, -10 ** 9
                 for k, linia in enumerate(linie):
                     yy = y + k * S1 * 1.06
                     x = float(L)
@@ -421,18 +429,28 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
                         txt = seg["t"] + (" " if gi < len(grupy) - 1 else "")
                         w_seg = _szer(f, seg["t"])
                         if seg["c"] == 1:
-                            rys.rectangle([x - 10, yy - S1 * 0.72,
-                                           x - 10 + w_seg + 20, yy - S1 * 0.72 + S1 * 0.95],
+                            gora_p = yy - S1 * 0.72
+                            rys.rectangle([x - 10, gora_p,
+                                           x - 10 + w_seg + 20, gora_p + S1 * 0.95],
                                           fill=podklad)
                             rys.text((x, yy), seg["t"], font=f,
                                      fill=TEKST_NA_PODKLADZIE, anchor="ls")
+                            # ⛔ Podkład to element WIDOCZNY — do granic bloku wchodzi
+                            # razem z literami, bo to on dotyka krawędzi kadru.
+                            ink_y1 = min(ink_y1, gora_p)
+                            ink_y2 = max(ink_y2, gora_p + S1 * 0.95)
                         else:
                             pisz_z_cieniem(plotno, rys, [((x, yy), seg["t"])], f, S1,
                                            bez_cienia=bez_cienia)
+                        bb = rys.textbbox((x, yy), seg["t"], font=f, anchor="ls")
+                        ink_y1 = min(ink_y1, bb[1])
+                        ink_y2 = max(ink_y2, bb[3])
                         x += _szer(f, txt)
                     x2 = max(x2, x + 10)
                 y_end = y + (len(linie) - 1) * S1 * 1.06
-                bloki.append({"x1": L, "y1": y_top, "x2": x2, "y2": y_end + S1 * 0.24})
+                if ink_y1 > ink_y2:          # pusty nagłówek — nie ma czego mierzyć
+                    ink_y1, ink_y2 = y - S1 * 0.80, y_end + S1 * 0.24
+                bloki.append({"x1": L, "y1": ink_y1, "x2": x2, "y2": ink_y2})
                 return {"x2": x2, "yEnd": y_end, "S1": S1}
 
             T = tresc["linie"][i] if i < 6 else None
@@ -459,8 +477,17 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
             bx = float(L)
             for t in linie_t:
                 bx = max(bx, L + _szer(f_txt, t))
-            dol_t = yd + (len(linie_t) - 1) * S2 * 1.24 + S2 * 0.3
-            bloki.append({"x1": L, "y1": yd - S2 * 0.85, "x2": bx + 8, "y2": dol_t})
+            # ⭐ 15.08 (s285) — treść też mierzona atramentem, nie wzorem.
+            t_y1, t_y2 = 10 ** 9, -10 ** 9
+            for k, t in enumerate(linie_t):
+                bb = rys.textbbox((L, yd + k * S2 * 1.24), t, font=f_txt, anchor="ls")
+                t_y1 = min(t_y1, bb[1])
+                t_y2 = max(t_y2, bb[3])
+            if t_y1 > t_y2:
+                t_y1 = yd - S2 * 0.85
+                t_y2 = yd + (len(linie_t) - 1) * S2 * 1.24 + S2 * 0.3
+            dol_t = t_y2
+            bloki.append({"x1": L, "y1": t_y1, "x2": bx + 8, "y2": t_y2})
 
             return {"plotno": plotno, "bloki": bloki, "N": N, "bx": bx,
                     "dol_t": dol_t, "gorna_t": min(b["y1"] for b in bloki)}
