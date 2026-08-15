@@ -115,11 +115,20 @@ DRABINKI = {"domyslna": drabinka_domyslna, "wysoko": drabinka_wysoko,
 MARGINES_OKLADKI = 9.0
 ODSTEP_OD_TWARZY = 28.0
 MARGINES_DOLNY = 104.0
-MARGINES_GORNY = 72.0
+# ⭐ 15.08 (s284) — 72 → 88 px. Bartek, po obejrzeniu podglądu z białym napisem:
+# „proponuję, żeby przerwa była tak samo od dołu, jak i od góry. Od góry może być
+# troszeczkę mniejsza, natomiast generalnie nie może być tak, że przy samej górze
+# też się pojawia napis".
+# ⛔ DLACZEGO 130, A NIE 88: te liczby odnoszą się do PUDEŁKA LINII (od linii bazowej
+# w górę o 0,80 stopnia pisma), a nie do faktycznych pikseli liter. Przy stopniu 92 px
+# wersaliki i cudzysłów wychodzą ok. 44 px ponad to pudełko. Zmierzone: przy stałej 88
+# widoczny odstęp od górnej krawędzi wynosił 44 px, przy 130 wynosi ok. 86 px — czyli
+# „troszeczkę mniej niż dolne 104". Zmieniając tę liczbę, MIERZYĆ piksele, nie ufać nazwie.
+MARGINES_GORNY = 130.0
 # Awaryjne, ciaśniejsze marginesy — używane dopiero wtedy, gdy przy pełnych blok nie
 # mieści się ani nad twarzą, ani pod nią. Lepiej ciaśniejsza okładka niż brak karuzeli.
 MARGINES_DOLNY_MIN = 56.0
-MARGINES_GORNY_MIN = 40.0
+MARGINES_GORNY_MIN = 48.0
 
 # Które plansze chcą człowieka. Reguła Bartka: okładka ZAWSZE z człowiekiem,
 # co najmniej 40% plansz z człowiekiem.
@@ -529,6 +538,14 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
                 podnies = min(nadmiar, max(0.0, zapas_u_gory))
                 if podnies > 1:
                     r0 = zloz(y_base - podnies)
+            # ⭐ 15.08 (s284) — i w drugą stronę: napis nie dotyka GÓRNEJ krawędzi.
+            # Bartek: „nie może być tak, że przy samej górze też się pojawia napis".
+            brak_u_gory = MARGINES_GORNY - r0["gorna_t"]
+            if brak_u_gory > 1:
+                zapas_u_dolu = (H - MARGINES_DOLNY) - r0["dol_t"]
+                opusc = min(brak_u_gory, max(0.0, zapas_u_dolu))
+                if opusc > 1:
+                    r0 = zloz(y_base + opusc)
 
         plotno = r0["plotno"]
         bloki = r0["bloki"]
