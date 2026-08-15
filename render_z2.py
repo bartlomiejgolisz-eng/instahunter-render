@@ -91,7 +91,15 @@ def drabinka_auto(i: int):
     """
     if i != 0:
         return drabinka_domyslna(i)
-    return [(30, POZ[0][1], "auto")] + drabinka_domyslna(0)
+    # ⭐ 15.08, druga uwaga Bartka: „jest troszeczkę przesunięte do prawej… zwykle się
+    # jednak pisze bardziej od lewej". Okładka miała w POZ lewy margines 20,6% szerokości
+    # (ok. 222 px) — wpisany ręcznie 16.08 i NIGDY nieliczony. Wcześniej tego nie było
+    # widać, bo napis stał nisko, przy krawędzi kadru; po wyśrodkowaniu w pionie wyszedł
+    # na czyste tło i odstęp od lewej zaczął rzucać się w oczy.
+    # Teraz 9% z lewej przy stałych 7% z prawej — marginesy są prawie równe, a blok czyta
+    # się jak tekst pisany od lewej, nie jak wciśnięty w prawy dolny róg.
+    # ⛔ Dotyczy WYŁĄCZNIE okładki. Plansze 2–7 zostają na nieregularnym układzie POZ.
+    return [(30, MARGINES_OKLADKI, "auto")] + drabinka_domyslna(0)
 
 
 DRABINKI = {"domyslna": drabinka_domyslna, "wysoko": drabinka_wysoko,
@@ -100,6 +108,7 @@ DRABINKI = {"domyslna": drabinka_domyslna, "wysoko": drabinka_wysoko,
 # Ile miejsca zostawiamy pod twarzą i przy dolnej krawędzi, gdy liczymy pozycję „auto".
 # ⛔ To NIE są liczby z sufitu: 28 px to mniej więcej połowa wysokości pisma treści,
 # a 40 px u dołu odpowiada dotychczasowemu zapasowi (24 px) plus margines na cień.
+MARGINES_OKLADKI = 9.0
 ODSTEP_OD_TWARZY = 28.0
 MARGINES_DOLNY = 40.0
 
