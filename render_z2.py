@@ -45,7 +45,12 @@ W, H = 1080, 1350
 # Przy tych wartościach zmierzono 0,7%.
 CIEN_PROMIEN = 0.26
 CIEN_KRYCIE = 0.45
-CIEN_PRZEBIEGI = 3
+# ⭐ 15.08: 3 → 4 przebiegi. Bartek: „chciałbym, żeby ta treść była troszeczkę większa
+# i bardziej widoczna… ale cień pod samymi literami, nie na całym zdjęciu".
+# Przebiegi NIE są objęte definicją „delikatnego" (ta ogranicza promień, krycie i pomiar
+# jasności) — dokładają gęstości tam, gdzie już jest maska liter, i nie tworzą pasa.
+# ⛔ Po każdej zmianie tej liczby MIERZYĆ przez `zmierz_cien` — próg Bartka to ≤ 2%.
+CIEN_PRZEBIEGI = 4
 
 # Nieregularny układ napisów — każda plansza ma inne miejsce. „daleko" znaczy,
 # że treść schodzi na wysokość 70% kadru, a nagłówek zostaje u góry.
@@ -66,7 +71,37 @@ def drabinka_wysoko(i: int):
             (44, 12, "blisko"), (52, 9, "blisko"), (62, 10.4, "blisko"), (66, 9, "blisko")]
 
 
-DRABINKI = {"domyslna": drabinka_domyslna, "wysoko": drabinka_wysoko}
+def drabinka_auto(i: int):
+    """⭐ 15.08 — odpowiedź na uwagę Bartka: „całość mogłaby być troszeczkę wyżej,
+    bo jest bardzo mało miejsca od dołu, a twarz jest wysoko, więc jest dużo miejsca,
+    żeby to wypośrodkować".
+
+    ⛔ CO BYŁO ŹLE: drabinki wyżej to LISTY SZTYWNYCH WYSOKOŚCI. Generator brał
+    pierwszą, na której napis nie dotykał twarzy — nikt nie mierzył, ile zostaje
+    wolnego miejsca. Twarz siedzi w górnej połowie kadru, więc pierwsza wolna
+    pozycja wypadała ok. 62% i napis lądował przyklejony do dołu.
+
+    ⛔ TYLKO OKŁADKA. Plansze 2–7 zostają na nieregularnym układzie (POZ) — to jest
+    świadomy zamysł („każda plansza ma inne miejsce"), a uwaga Bartka dotyczyła
+    pierwszego slajdu. Gdyby liczyć wszystkie, siedem plansz stanęłoby w tym samym
+    miejscu i format straciłby rytm.
+
+    Za pozycją „auto" stoi stara drabinka jako awaryjna — gdyby wyliczone miejsce
+    nie przeszło (za wysoki blok, twarz nietypowo nisko).
+    """
+    if i != 0:
+        return drabinka_domyslna(i)
+    return [(30, POZ[0][1], "auto")] + drabinka_domyslna(0)
+
+
+DRABINKI = {"domyslna": drabinka_domyslna, "wysoko": drabinka_wysoko,
+            "auto": drabinka_auto}
+
+# Ile miejsca zostawiamy pod twarzą i przy dolnej krawędzi, gdy liczymy pozycję „auto".
+# ⛔ To NIE są liczby z sufitu: 28 px to mniej więcej połowa wysokości pisma treści,
+# a 40 px u dołu odpowiada dotychczasowemu zapasowi (24 px) plus margines na cień.
+ODSTEP_OD_TWARZY = 28.0
+MARGINES_DOLNY = 40.0
 
 # Które plansze chcą człowieka. Reguła Bartka: okładka ZAWSZE z człowiekiem,
 # co najmniej 40% plansz z człowiekiem.
@@ -234,7 +269,7 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
     gy, gx, tryb = pozycja
     L = round(W * gx / 100.0)
     maxW = W - L - round(W * 0.07)
-    S2 = 46
+    S2 = 52
     max_lin = 3 if i == 0 else 2
 
     f_nag_cache = {}
@@ -272,86 +307,144 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
             tx2 = (tw[0] + tw[2]) / 100.0 * rw
             ox = max(min(ox, min(0, W - 16 - tx2)), max(W - rw, 16 - tx1))
 
-        plotno = Image.new("RGB", (W, H), (0, 0, 0))
-        plotno.paste(skala, (round(ox), round(oy)))
-        rys = ImageDraw.Draw(plotno)
+        def zloz(y_base: float):
+            """Składa CAŁĄ planszę przy zadanej wysokości napisu.
 
-        bloki = []
+            ⭐ Wydzielone 15.08 z ciała pętli, żeby dało się złożyć planszę PRÓBNIE
+            (zmierzyć, jak wysoki wyszedł blok tekstu), a potem złożyć ją drugi raz
+            już na policzonej wysokości. Bez tego nie da się niczego wyśrodkować:
+            wysokości bloku nie znamy, zanim nie dobierzemy stopnia pisma i łamania.
+            Stopień pisma i łamanie NIE zależą od y_base, więc jedna próba wystarcza.
+            """
+            plotno = Image.new("RGB", (W, H), (0, 0, 0))
+            plotno.paste(skala, (round(ox), round(oy)))
+            rys = ImageDraw.Draw(plotno)
 
-        def nag(pre: str, cyt: str, y_base: float):
-            """Nagłówek: część biała (pre) + cytat na podkładzie w kolorze marki."""
-            slowa = ([{"t": t, "c": 0} for t in pre.split(" ") if t] if pre else []) \
-                    + [{"t": t, "c": 1} for t in str(cyt).split(" ") if t]
-            S1, linie = 92, []
-            for kand in (92, 86, 80, 74, 68, 62, 56, 50, 44):
-                S1 = kand
-                f = f_nag(S1)
-                linie, cur = [], []
-                for w in slowa:
-                    prob = cur + [w]
-                    if _szer(f, " ".join(x["t"] for x in prob)) > maxW and cur:
+            bloki = []
+
+            def nag(pre: str, cyt: str, y_naglowka: float, cudzyslow: bool = True):
+                """Nagłówek: część biała (pre) + cytat na podkładzie w kolorze marki.
+
+                ⭐⭐ 15.08 — CUDZYSŁÓW. Ustalenie „to, co zakreślone, ma stać
+                w cudzysłowie" zapadło 14.08, ale wylądowało WYŁĄCZNIE w tekście
+                promptu w Airtable — w tym pliku nie było ani jednego znaku cytatu.
+                Bartek brał za cudzysłów sam podkład w kolorze marki.
+                Znaki doklejamy do pierwszego i ostatniego słowa cytatu, żeby jechały
+                razem z tekstem przy łamaniu linii; podkład rysujemy pod ZMIERZONYM
+                słowem, więc rozszerza się sam i cudzysłów mieści się w środku.
+                ⛔ Hasło CTA (plansza 7) nie dostaje cudzysłowu — to nie jest cudza
+                wypowiedź, tylko wezwanie od klienta.
+                """
+                cyt_slowa = [t for t in str(cyt).split(" ") if t]
+                if cudzyslow and cyt_slowa:
+                    cyt_slowa[0] = "„" + cyt_slowa[0]
+                    cyt_slowa[-1] = cyt_slowa[-1] + "”"
+                slowa = ([{"t": t, "c": 0} for t in pre.split(" ") if t] if pre else []) \
+                        + [{"t": t, "c": 1} for t in cyt_slowa]
+                S1, linie = 92, []
+                for kand in (92, 86, 80, 74, 68, 62, 56, 50, 44):
+                    S1 = kand
+                    f = f_nag(S1)
+                    linie, cur = [], []
+                    for w in slowa:
+                        prob = cur + [w]
+                        if _szer(f, " ".join(x["t"] for x in prob)) > maxW and cur:
+                            linie.append(cur)
+                            cur = [w]
+                        else:
+                            cur = prob
+                    if cur:
                         linie.append(cur)
-                        cur = [w]
-                    else:
-                        cur = prob
-                if cur:
-                    linie.append(cur)
-                naj = max(_szer(f, " ".join(x["t"] for x in a)) for a in linie)
-                if len(linie) <= max_lin and naj <= maxW:
-                    break
-            f = f_nag(S1)
-            x2 = L
-            y = y_base + S1 * 0.78
-            y_top = y - S1 * 0.80
-            for k, linia in enumerate(linie):
-                yy = y + k * S1 * 1.06
-                x = float(L)
-                grupy = []
-                for w in linia:
-                    if grupy and grupy[-1]["c"] == w["c"]:
-                        grupy[-1]["t"] += " " + w["t"]
-                    else:
-                        grupy.append({"t": w["t"], "c": w["c"]})
-                for gi, seg in enumerate(grupy):
-                    txt = seg["t"] + (" " if gi < len(grupy) - 1 else "")
-                    w_seg = _szer(f, seg["t"])
-                    if seg["c"] == 1:
-                        rys.rectangle([x - 10, yy - S1 * 0.72,
-                                       x - 10 + w_seg + 20, yy - S1 * 0.72 + S1 * 0.95],
-                                      fill=podklad)
-                        rys.text((x, yy), seg["t"], font=f,
-                                 fill=TEKST_NA_PODKLADZIE, anchor="ls")
-                    else:
-                        pisz_z_cieniem(plotno, rys, [((x, yy), seg["t"])], f, S1,
-                                       bez_cienia=bez_cienia)
-                    x += _szer(f, txt)
-                x2 = max(x2, x + 10)
-            y_end = y + (len(linie) - 1) * S1 * 1.06
-            bloki.append({"x1": L, "y1": y_top, "x2": x2, "y2": y_end + S1 * 0.24})
-            return {"x2": x2, "yEnd": y_end, "S1": S1}
+                    naj = max(_szer(f, " ".join(x["t"] for x in a)) for a in linie)
+                    if len(linie) <= max_lin and naj <= maxW:
+                        break
+                f = f_nag(S1)
+                x2 = L
+                y = y_naglowka + S1 * 0.78
+                y_top = y - S1 * 0.80
+                for k, linia in enumerate(linie):
+                    yy = y + k * S1 * 1.06
+                    x = float(L)
+                    grupy = []
+                    for w in linia:
+                        if grupy and grupy[-1]["c"] == w["c"]:
+                            grupy[-1]["t"] += " " + w["t"]
+                        else:
+                            grupy.append({"t": w["t"], "c": w["c"]})
+                    for gi, seg in enumerate(grupy):
+                        txt = seg["t"] + (" " if gi < len(grupy) - 1 else "")
+                        w_seg = _szer(f, seg["t"])
+                        if seg["c"] == 1:
+                            rys.rectangle([x - 10, yy - S1 * 0.72,
+                                           x - 10 + w_seg + 20, yy - S1 * 0.72 + S1 * 0.95],
+                                          fill=podklad)
+                            rys.text((x, yy), seg["t"], font=f,
+                                     fill=TEKST_NA_PODKLADZIE, anchor="ls")
+                        else:
+                            pisz_z_cieniem(plotno, rys, [((x, yy), seg["t"])], f, S1,
+                                           bez_cienia=bez_cienia)
+                        x += _szer(f, txt)
+                    x2 = max(x2, x + 10)
+                y_end = y + (len(linie) - 1) * S1 * 1.06
+                bloki.append({"x1": L, "y1": y_top, "x2": x2, "y2": y_end + S1 * 0.24})
+                return {"x2": x2, "yEnd": y_end, "S1": S1}
+
+            T = tresc["linie"][i] if i < 6 else None
+            if T:
+                # ⭐⭐ 15.08 — SŁOWO „TO" STOI WYŁĄCZNIE NA OKŁADCE.
+                # Ustalenie z 14.08 („plansze 2–6 to całe zdanie klienta, bez «to»")
+                # było zapisane w promptcie formatu w Airtable, ale ten plik dalej
+                # dostawiał „to" na każdej planszy. Stąd zdania w rodzaju
+                # „to «moja księgowa to ogarnie»".
+                N = nag((tresc["temat"] + " to") if i == 0 else "", T[0], y_base)
+            else:
+                N = nag("", tresc["cta"][0], y_base, cudzyslow=False)
+
+            linie_t = lam(f_txt, T[1] if T else tresc["cta"][1], maxW)
+            if T and tryb == "daleko":
+                yd = round(H * 0.70)
+            else:
+                yd = N["yEnd"] + N["S1"] * 0.25 + S2 * 1.15
+
+            pisz_z_cieniem(plotno, rys,
+                           [((L, yd + k * S2 * 1.24), t) for k, t in enumerate(linie_t)],
+                           f_txt, S2, bez_cienia=bez_cienia)
+
+            bx = float(L)
+            for t in linie_t:
+                bx = max(bx, L + _szer(f_txt, t))
+            dol_t = yd + (len(linie_t) - 1) * S2 * 1.24 + S2 * 0.3
+            bloki.append({"x1": L, "y1": yd - S2 * 0.85, "x2": bx + 8, "y2": dol_t})
+
+            return {"plotno": plotno, "bloki": bloki, "N": N, "bx": bx,
+                    "dol_t": dol_t, "gorna_t": min(b["y1"] for b in bloki)}
 
         y_base = round(H * gy / 100.0)
-        T = tresc["linie"][i] if i < 6 else None
-        if T:
-            N = nag((tresc["temat"] + " to") if i == 0 else "to", T[0], y_base)
-        else:
-            N = nag("", tresc["cta"][0], y_base)
+        r0 = zloz(y_base)
 
-        linie_t = lam(f_txt, T[1] if T else tresc["cta"][1], maxW)
-        if T and tryb == "daleko":
-            yd = round(H * 0.70)
-        else:
-            yd = N["yEnd"] + N["S1"] * 0.25 + S2 * 1.15
+        # ⭐⭐ 15.08 — WYŚRODKOWANIE NA OKŁADCE (pozycja „auto").
+        # Bartek: „mogłoby być całość troszeczkę wyżej, bo jest bardzo mało miejsca
+        # od dołu, a twarz jest wysoko — jest dużo miejsca, żeby to wypośrodkować".
+        # Dotąd nikt nie mierzył wolnego pola: drabinka podawała sztywne wysokości,
+        # a generator brał pierwszą, na której napis nie dotykał twarzy.
+        # Teraz: bierzemy dolną krawędź twarzy, liczymy wolne pole do dołu kadru
+        # i wstawiamy w jego środek zmierzony blok tekstu.
+        if tryb == "auto":
+            wys = r0["dol_t"] - r0["gorna_t"]
+            ty2 = (oy + (tw[1] + tw[3]) / 100.0 * rh) if tw else 0.0
+            gora = max(24.0, ty2 + ODSTEP_OD_TWARZY)
+            dol = H - MARGINES_DOLNY
+            wolne = dol - gora
+            cel = gora + (wolne - wys) / 2.0 if wolne >= wys else max(24.0, dol - wys)
+            przesun = cel - r0["gorna_t"]
+            if abs(przesun) > 1:
+                r0 = zloz(y_base + przesun)
 
-        pisz_z_cieniem(plotno, rys,
-                       [((L, yd + k * S2 * 1.24), t) for k, t in enumerate(linie_t)],
-                       f_txt, S2, bez_cienia=bez_cienia)
-
-        bx = float(L)
-        for t in linie_t:
-            bx = max(bx, L + _szer(f_txt, t))
-        dol_t = yd + (len(linie_t) - 1) * S2 * 1.24 + S2 * 0.3
-        bloki.append({"x1": L, "y1": yd - S2 * 0.85, "x2": bx + 8, "y2": dol_t})
+        plotno = r0["plotno"]
+        bloki = r0["bloki"]
+        N = r0["N"]
+        dol_t = r0["dol_t"]
+        bx = r0["bx"]
 
         if dol_t > H - 24 or max(N["x2"], bx) > W - 18:
             return {"zaDuze": True}
@@ -382,7 +475,6 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
                 "twarz": zakr,
             }
     return None
-
 
 # ------------------------------------------------------------------ całość
 # ⛔ Dłuższy bok po pobraniu. 1700 px wystarcza z zapasem: kadr ma 1080×1350, więc
