@@ -35,7 +35,7 @@ import math
 import os
 from typing import List, Optional, Tuple
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 W, H = 1080, 1350
 
@@ -126,7 +126,20 @@ MARGINES_GORNY_MIN = 40.0
 CHCE_CZLOWIEKA = [1, 0, 1, 0, 1, 0, 1]
 
 TEKST_JASNY = (248, 248, 248)
-TEKST_NA_PODKLADZIE = (20, 32, 15)      # #14200F
+
+# ⭐⭐⭐ 15.08 (s283) — NAPIS NA ZAKREŚLACZU JEST ZAWSZE BIAŁY. DECYZJA BARTKA.
+# „Mam wątpliwości, czy te napisy muszą być czarne… Ja wolałem, kiedy one były białe,
+# zdecydowanie. Myślę, że to nawet może być reguła, że zawsze te napisy na tym
+# zakreślaczu są białe. W ogóle ja bym nie robił nigdzie czarnych."
+#
+# Historia tej linijki, żeby nikt jej trzeci raz nie ruszał:
+#   • do s281 — na sztywno ciemna zieleń #14200F (dobrana pod żółty i pomarańcz);
+#   • s282 — liczona kontrastem WCAG, bo u Łukasza ciemne na granacie znikało;
+#   • s283 — ZAWSZE BIAŁY. Bartek chce jednego wyglądu na wszystkich profilach,
+#     nie wyglądu zależnego od koloru marki.
+# ⛔ To jest wybór estetyczny, nie pomiar. Na jasnym żółtym biel ma niski kontrast
+# liczbowo — Bartek to widział i tak zdecydował. Nie „poprawiać" tego z powrotem.
+TEKST_NA_PODKLADZIE = TEKST_JASNY
 
 # ---------------------------------------------------------------- czcionki
 # ⛔ Nazwa rodziny przychodzi z profilu klienta („Anton", „Playfair Display").
@@ -288,7 +301,13 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
     L = round(W * gx / 100.0)
     maxW = W - L - round(W * 0.07)
     S2 = 52
-    max_lin = 3 if i == 0 else 2
+    # ⭐⭐ 15.08 (s283) — CTA (plansza 7) dostaje trzecią linię nagłówka, tak jak okładka.
+    # Bartek: „Call to Action… ten napis w markerze jest taki bardzo pomniejszony".
+    # Przyczyna: hasło CTA to najdłuższy nagłówek w całej karuzeli („Sprawdź kontrahenta
+    # za darmo na finmach.pl — link w bio"), a przy limicie DWÓCH linii jedyny sposób,
+    # żeby się zmieścił, to zejście stopniem pisma aż do 44–50 px. Przy trzech liniach
+    # drabinka zatrzymuje się kilka stopni wyżej i hasło jest normalnej wielkości.
+    max_lin = 3 if i in (0, 6) else 2
 
     f_nag_cache = {}
 
@@ -486,6 +505,31 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
             if abs(przesun) > 1:
                 r0 = zloz(y_base + przesun)
 
+        # ⭐⭐⭐ 15.08 (s283) — MARGINES DOLNY OBOWIĄZUJE NA KAŻDEJ PLANSZY, NIE TYLKO
+        # NA OKŁADCE. Bartek: „tam tak jakby nie obowiązywała ta zasada, że musi być
+        # jakaś przerwa pomiędzy dołem… to jest taka sama zasada na każdym slajdzie,
+        # ale zauważyłem, że to się najczęściej zdarza na tych ostatnich slajdach".
+        #
+        # Dlaczego akurat ostatnie: plansze 2–7 stoją na sztywnych wysokościach z POZ,
+        # a plansza 7 startuje najniżej ze wszystkich (67,8% wysokości kadru). Przy
+        # dłuższej treści blok schodził poniżej marginesu i nikt tego nie sprawdzał —
+        # jedyny warunek, jaki tam był, to twarde `dol_t > H - 24`, czyli „byle nie
+        # wyszło poza kadr".
+        #
+        # Teraz: jeżeli blok schodzi poniżej `H - MARGINES_DOLNY`, PODNOSIMY go o brakującą
+        # różnicę — ale tylko tyle, ile pozwala górny margines. Rytm formatu zostaje
+        # (każda plansza dalej startuje z innej wysokości), znika samo doklejanie do dołu.
+        # ⛔ Tylko układ „blisko". W układzie „daleko" nagłówek stoi u góry, a treść na 70%
+        # niezależnie od `y_base` — podnoszenie `y_base` ruszyłoby sam nagłówek i rozjechało
+        # planszę. Te dwie plansze (2 i 3) i tak mają zapas ponad 250 px.
+        elif tryb == "blisko":
+            nadmiar = r0["dol_t"] - (H - MARGINES_DOLNY)
+            if nadmiar > 1:
+                zapas_u_gory = r0["gorna_t"] - MARGINES_GORNY
+                podnies = min(nadmiar, max(0.0, zapas_u_gory))
+                if podnies > 1:
+                    r0 = zloz(y_base - podnies)
+
         plotno = r0["plotno"]
         bloki = r0["bloki"]
         N = r0["N"]
@@ -530,8 +574,21 @@ MAKS_BOK = 1700
 
 
 def zmniejsz(im):
+    """⭐⭐ 15.08 (s282) — OBRÓT Z EXIF. Zdjęcia z telefonu bardzo często leżą
+    w pliku poziomo, a pionowo ustawia je dopiero znacznik EXIF Orientation.
+    Przeglądarka ten znacznik honoruje, Pillow — NIE. Skutek u Łukasza (15.08):
+    okładka i plansza 4 wyszły położone na boku.
+    ⛔ To psuło też RAMKĘ TWARZY: ramki liczy przeglądarka (MediaPipe) na obrazie
+    już obróconym, więc procenty odnosiły się do innego układu niż ten, na którym
+    render stawiał napis. Stąd napisy w poprzek sylwetki na tych kadrach.
+    `exif_transpose` obraca piksele i usuwa znacznik — od tego momentu obie strony
+    patrzą na ten sam obraz."""
     if im is None:
         return None
+    try:
+        im = ImageOps.exif_transpose(im)
+    except Exception:
+        pass
     if max(im.size) <= MAKS_BOK:
         return im
     im = im.copy()
