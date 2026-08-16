@@ -744,7 +744,7 @@ def _przyciemnienie_okladki(base, brand, gdzie):
 
 
 # ---------- KADR OKŁADKI WG TWARZY ----------
-def _metryka_okladki(d, brand, title, subtitle):
+def _metryka_okladki(d, brand, title, subtitle, stopka=None):
     """Liczy WYSOKOŚĆ bloku tekstu okładki (hook + chip podtytułu) razem z fontami.
 
     ⭐ Wydzielone, bo teraz potrzebujemy tego DWA razy i w tej kolejności:
@@ -764,9 +764,23 @@ def _metryka_okladki(d, brand, title, subtitle):
             cf, sub_lines, _ = _fit_rich(d, sub_txt, brand.font_bold, 52, 34, 2, max_w=chip_max_w)
         chip_lh = int(cf.size) if len(sub_lines) == 1 else int(cf.size * 1.22)
         chip_h = chip_lh * len(sub_lines) + 2 * 22
-    block_h = lh * len(tl) + (34 + chip_h if subtitle else 0)
+    # ⭐⭐ 16.08 wieczorem — TRZECI ELEMENT BLOKU: ZDANIE POD PLAKIETKĄ (`stopka`).
+    # Potrzebne wyłącznie planszy CTA, która od dziś jest okładką w drugiej odsłonie:
+    # okładka mówi „hasło + plakietka", CTA mówi „hasło + plakietka + jedno zdanie
+    # wyjaśnienia". Wysokość MUSI wejść do `block_h`, bo to `block_h` decyduje, gdzie
+    # zaczyna się blok i który kadr zdjęcia w ogóle przejdzie — gdyby zdanie dochodziło
+    # dopiero przy rysowaniu, wyszłoby poza dolny margines albo na twarz.
+    stopka_f, stopka_lines, stopka_lh, stopka_h = None, [], 0, 0
+    if stopka:
+        stopka_f, stopka_lines, _ = _fit_rich(d, stopka, brand.font_med, 44, 32, 3)
+        stopka_lh = int(stopka_f.size * 1.3)
+        stopka_h = stopka_lh * len(stopka_lines)
+    block_h = (lh * len(tl) + (34 + chip_h if subtitle else 0)
+               + (26 + stopka_h if stopka else 0))
     return {"tf": tf, "tl": tl, "lh": lh, "cf": cf, "sub_lines": sub_lines,
-            "chip_lh": chip_lh, "chip_h": chip_h, "block_h": block_h}
+            "chip_lh": chip_lh, "chip_h": chip_h, "block_h": block_h,
+            "stopka_f": stopka_f, "stopka_lines": stopka_lines, "stopka_lh": stopka_lh,
+            "stopka_h": stopka_h}
 
 
 def _plan_kadru(iw, ih, twarz, w, h, dol_bezpieczny, gora_min=36, max_zoom=2.4):
@@ -841,7 +855,7 @@ def _kadr_twarz_nad(img, twarz, w, h, dol_bezpieczny, gora_min=36, max_zoom=2.4)
 
 # ---------- SLAJDY ----------
 def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=None, title_shift=0,
-                 twarz=None):
+                 twarz=None, stopka=None):
     """Okładka. Ze zdjęciem = pełnoklatkowe foto+scrim; bez = tekstowa z badge liczby.
 
     ⭐ `twarz` = ramka [x, y, w, h] w PROCENTACH zdjęcia (pole „Twarz — ramka" w bazie).
@@ -857,7 +871,7 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
     if on_photo:
         # ⭐ KOLEJNOŚĆ MA ZNACZENIE: najpierw mierzymy napis (ma stałe miejsce u dołu),
         # dopiero potem wycinamy kadr tak, żeby twarz stanęła NAD nim.
-        _m = _metryka_okladki(ImageDraw.Draw(base), brand, title, subtitle)
+        _m = _metryka_okladki(ImageDraw.Draw(base), brand, title, subtitle, stopka)
         _y_doc = max(120, H - 158 - _m["block_h"] - int(title_shift or 0))
         _zrodlo = _warm_grade(photo.convert("RGB"))
         _wyc = _kadr_twarz_nad(_zrodlo, twarz, W, H, _y_doc - 34)
@@ -958,6 +972,15 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
             for t in line_txts:
                 dc.text((MARGIN + pad_x, ty), t, font=cf, fill=hex2rgb(brand.white))
                 ty += chip_lh
+            y = cy + chip_h
+        # ⭐ ZDANIE POD PLAKIETKĄ — tylko plansza CTA. Biel z cieniem, ten sam stopień pisma
+        # co akapity na planszach treści, więc najważniejsze zdanie tej planszy przestaje
+        # być najmniejszym drukiem w całej karuzeli.
+        if stopka and _m.get("stopka_lines"):
+            _draw_rich(base, MARGIN, y + 26,
+                       [[(w, False) for w, _ in ln] for ln in _m["stopka_lines"]],
+                       _m["stopka_f"], white, white, _m["stopka_lh"],
+                       shadow=True, shadow_strength=_ss)
     else:
         ink, sec = _ink_on_bg(brand), _sec_on_bg(brand)
         y = 235
@@ -1425,9 +1448,26 @@ def render_cytat(brand, cytat, autor, idx, total, avatar=None, kicker=None):
     return base.convert("RGB")
 
 
-def render_cta(brand, heading, body, cta, idx, total, photo=None):
-    """Slajd CTA (ostatni): karta z koralową ramką + okrągły awatar (powrót zdjęcia
-    z okładki) + linia 'Obserwuj po więcej'."""
+def render_cta(brand, heading, body, cta, idx, total, photo=None, foto_pelna=None, twarz=None):
+    """Slajd CTA (ostatni).
+
+    ⭐⭐⭐ 16.08 wieczorem — DWIE ODSŁONY. Ze zdjęciem pełnoklatkowym (`foto_pelna`)
+    plansza CTA wygląda jak OKŁADKA: to samo zdjęcie na całą klatkę, ten sam biały
+    nagłówek, ta sama prostokątna plakietka w kolorze marki. Pomysł Bartka: „wróćmy do
+    tego pierwszego zdjęcia i zróbmy Call to Action w podobnej formie".
+    ⭐ DLACZEGO TO JEST DOBRE, A NIE TYLKO ŁADNE: karuzela zaczyna się i kończy twarzą
+    tej samej osoby, więc prośba na końcu pada od kogoś, kogo czytelnik przed chwilą
+    widział. Do tego nie wymyślamy nowego układu — bierzemy ten jeden, który jest
+    w tym formacie sprawdzony i zaakceptowany, więc każda przyszła poprawka okładki
+    poprawia od razu obie plansze.
+    ⛔ ZNIKA „Obserwuj po więcej: <handle>". Rano zdjęliśmy handle ze wszystkich plansz,
+    bo powtarza to, co i tak stoi nad postem. Została ostatnia — i była DRUGIM wezwaniem
+    obok właściwego („napisz w DM"). Jedna plansza, jedna prośba.
+    ⛔ Wariant z ramką (bez `foto_pelna`) ZOSTAJE nietknięty — leci, gdy klient nie ma
+    ani jednego zdjęcia nadającego się na pełną klatkę."""
+    if foto_pelna is not None:
+        return render_cover(brand, heading, cta or "", "", idx, total,
+                            photo=foto_pelna, twarz=twarz, stopka=body)
     base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
     _vignette(base, brand)
     _accent_bar(base, brand)
@@ -1567,9 +1607,25 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None, twarze=Non
         elif t == "cta":
             # CTA: w kółku ZDJĘCIE PROFILOWE klienta (decyzja Bartka s103); zdjęcie
             # z okładki tylko awaryjnie, gdy brak profilowego.
+            # ⭐⭐⭐ 16.08 wieczorem — CTA TO DOSŁOWNIE OKŁADKA Z INNYM NAPISEM.
+            # Bartek, po zobaczeniu wersji, która dobierała CTA osobne zdjęcie: „nie ma tu
+            # wielkiej filozofii, robimy dosłownie to samo co na pierwszym slajdzie: takie
+            # samo zdjęcie, taki sam układ, tylko zmieniamy napis".
+            # ⛔ CO WYRZUCIŁEM I DLACZEGO TO BYŁO SŁUSZNE: napisałem wcześniej dobieranie
+            # INNEGO zdjęcia niż okładkowe (żeby karuzela nie zaczynała się i nie kończyła
+            # tym samym kadrem) plus test `_plan_kadru` na tym drugim zdjęciu. To była
+            # osobna, druga reguła doboru kadru — czyli drugie miejsce, w którym trzeba
+            # pamiętać o twarzy, marginesach i zoomie. Przy jednym zdjęciu pytanie „czy
+            # napis nie wejdzie na twarz" jest już rozstrzygnięte: rozstrzygnął je wybór
+            # okładki. Klamra na końcu karuzeli jest zamierzona, nie jest powtórzeniem
+            # przez przypadek.
+            # ⛔ Gdy okładka nie ma zdjęcia (klient bez zdjęć), `cover_photo` jest puste
+            # i CTA leci starym układem z ramką — bez żadnego dodatkowego warunku.
+            _cta_foto, _cta_twarz = cover_photo, cover_twarz
             img = render_cta(eff, s.get("heading", ""), s.get("body", ""),
                              s.get("cta", ""), i, total,
-                             photo=(av if av is not None else cover_photo))
+                             photo=(av if av is not None else cover_photo),
+                             foto_pelna=_cta_foto, twarz=_cta_twarz)
         elif t == "list":
             img = render_list(eff, s.get("number"), s.get("heading", ""),
                               s.get("items", []), i, total, avatar=av_use,
