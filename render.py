@@ -1448,7 +1448,8 @@ def render_cytat(brand, cytat, autor, idx, total, avatar=None, kicker=None):
     return base.convert("RGB")
 
 
-def render_cta(brand, heading, body, cta, idx, total, photo=None, foto_pelna=None, twarz=None):
+def render_cta(brand, heading, body, cta, idx, total, photo=None, foto_pelna=None, twarz=None,
+               przesun=0):
     """Slajd CTA (ostatni).
 
     ⭐⭐⭐ 16.08 wieczorem — DWIE ODSŁONY. Ze zdjęciem pełnoklatkowym (`foto_pelna`)
@@ -1466,8 +1467,22 @@ def render_cta(brand, heading, body, cta, idx, total, photo=None, foto_pelna=Non
     ⛔ Wariant z ramką (bez `foto_pelna`) ZOSTAJE nietknięty — leci, gdy klient nie ma
     ani jednego zdjęcia nadającego się na pełną klatkę."""
     if foto_pelna is not None:
+        # ⛔⛔ 16.08, POPRAWKA PO PIERWSZEJ PRAWDZIWEJ KARCIE — BEZ ZDANIA WYJAŚNIAJĄCEGO.
+        # Najpierw dokładałem tu `stopka=body`, czyli trzeci element pod plakietką. Skutek
+        # na karcie recQMl51fcuSjJzrw: blok CTA był o linię wyższy od okładkowego, więc
+        # liczył sobie INNĄ pozycję w kadrze — okładka postawiła napis u góry, nad postacią,
+        # a CTA zjechało na sylwetkę. Dwie plansze z tego samego zdjęcia wyglądały jak dwa
+        # różne pomysły.
+        # ⭐ Bartek: „robimy dosłownie to samo co na pierwszym slajdzie, tylko zmieniamy
+        # napis". Przy IDENTYCZNEJ budowie bloku (nagłówek + plakietka) matematyka kadru
+        # dostaje te same dane co okładka i stawia napis w tym samym miejscu. Zgodność
+        # nie bierze się z dobrych chęci, tylko z tego, że liczy to jedna funkcja na tych
+        # samych wymiarach.
+        # ⛔ `body` przestaje być rysowane w tej odsłonie. Treść nie znika z karty — zostaje
+        # w opisie pod postem. Gdyby kiedyś miała wrócić na planszę, wystarczy `stopka=body`
+        # (mechanizm w `_metryka_okladki` zostaje) — ale wtedy wraca też różnica pozycji.
         return render_cover(brand, heading, cta or "", "", idx, total,
-                            photo=foto_pelna, twarz=twarz, stopka=body)
+                            photo=foto_pelna, twarz=twarz, title_shift=przesun)
     base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
     _vignette(base, brand)
     _accent_bar(base, brand)
@@ -1622,10 +1637,30 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None, twarze=Non
             # ⛔ Gdy okładka nie ma zdjęcia (klient bez zdjęć), `cover_photo` jest puste
             # i CTA leci starym układem z ramką — bez żadnego dodatkowego warunku.
             _cta_foto, _cta_twarz = cover_photo, cover_twarz
+            # ⭐⭐⭐ NAPIS CTA STAJE NA TEJ SAMEJ WYSOKOŚCI CO NA OKŁADCE.
+            # Samo „ten sam układ" nie wystarczyło: wysokość napisu liczy się od WYSOKOŚCI
+            # BLOKU, a hasło CTA ma inną długość niż tytuł okładki, więc obie plansze
+            # wychodziły w innych miejscach kadru (zmierzone: 658 vs 768 px). Na zdjęciu,
+            # gdzie postać stoi centralnie, jedna plansza trafiała w niebo, a druga
+            # w sylwetkę — i to widać jako dwa różne pomysły na tę samą kartę.
+            # ⛔ Nie dokładam nowego parametru pozycji. `title_shift` już przesuwa napis
+            # (jest w kodzie od s283), więc liczę RÓŻNICĘ między naturalną wysokością CTA
+            # a wysokością okładki i podaję ją jako przesunięcie. Jedna droga ustawiania
+            # napisu, nie dwie konkurencyjne.
+            # ⛔ Dolny hamulec: przesunięcie w dół nie może zjeść marginesu dolnego poniżej
+            # 120 px — lepiej minimalna różnica wobec okładki niż napis przy krawędzi.
+            _cta_shift = 0
+            if _cta_foto is not None and _y_doc is not None:
+                _mm_cta = _metryka_okladki(
+                    ImageDraw.Draw(Image.new("RGB", (W, H))), eff,
+                    s.get("heading", ""), s.get("cta", "") or "")
+                _y_cta = max(120, H - 158 - _mm_cta["block_h"])
+                _cta_shift = max(-38, int(_y_cta - _y_doc))
             img = render_cta(eff, s.get("heading", ""), s.get("body", ""),
                              s.get("cta", ""), i, total,
                              photo=(av if av is not None else cover_photo),
-                             foto_pelna=_cta_foto, twarz=_cta_twarz)
+                             foto_pelna=_cta_foto, twarz=_cta_twarz,
+                             przesun=_cta_shift)
         elif t == "list":
             img = render_list(eff, s.get("number"), s.get("heading", ""),
                               s.get("items", []), i, total, avatar=av_use,
