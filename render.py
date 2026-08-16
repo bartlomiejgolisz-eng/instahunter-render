@@ -900,6 +900,40 @@ def _check(base, brand, x, y, r=22):
            fill=hex2rgb(brand.white), width=5)
 
 
+def _awatar_z_twarzy(foto, twarz, margines=0.85, w_dol=0.58):
+    """⭐⭐ 16.08 wieczorem — AWATAR JAKO PRAWDZIWE ZDJĘCIE PROFILOWE.
+    Bartek o kółku w prawym górnym rogu: „wykadruj dobrze tę twarz, żeby to wyglądało
+    faktycznie jak zdjęcie profilowe".
+    ⛔ SKĄD SIĘ BRAŁ PROBLEM: w kółko szło zdjęcie profilowe z bazy w całości, docinane
+    `ImageOps.fit` po środku kadru. Przy zdjęciu całej sylwetki (a takie klientki wrzucają
+    najczęściej) w kółku lądował tors i kawałek tła, a twarz robiła się wielkości ziarnka.
+    ⭐ ROZWIĄZANIE: skoro znamy RAMKĘ TWARZY na zdjęciu okładkowym, wycinamy z niego
+    kwadrat wokół samej twarzy — z powietrzem nad głową i pod brodą, tak jak kadruje się
+    portrety. Twarz siada nieco NAD środkiem kwadratu (`w_dol` < 1), bo portret z twarzą
+    dokładnie w połowie wygląda na zsunięty w dół.
+    ⛔ Bez ramki twarzy nie zgadujemy — wraca stare zachowanie (zdjęcie profilowe w całości)."""
+    try:
+        if foto is None or not twarz or len(twarz) < 4:
+            return None
+        iw, ih = foto.size
+        x, y, fw, fh = [float(v) for v in twarz[:4]]
+        if fw <= 0 or fh <= 0:
+            return None
+        fx1, fy1 = x / 100.0 * iw, y / 100.0 * ih
+        fx2, fy2 = (x + fw) / 100.0 * iw, (y + fh) / 100.0 * ih
+        cx = (fx1 + fx2) / 2.0
+        bok = max(fx2 - fx1, fy2 - fy1) * (1.0 + 2 * margines)
+        bok = min(bok, float(min(iw, ih)))
+        cy = (fy1 + fy2) / 2.0 + bok * (w_dol - 0.5) * 0.5
+        l = int(round(max(0, min(iw - bok, cx - bok / 2.0))))
+        g = int(round(max(0, min(ih - bok, cy - bok / 2.0))))
+        b = int(round(bok))
+        wyc = foto.convert("RGB").crop((l, g, l + b, g + b))
+        return wyc if wyc.size[0] > 40 else None
+    except Exception:
+        return None
+
+
 def _circle(photo, d, center=(0.5, 0.42)):
     """Zdjęcie przycięte do koła (RGBA, przezroczyste tło poza kołem)."""
     im = ImageOps.fit(photo.convert("RGB"), (d, d), method=Image.LANCZOS, centering=center)
@@ -1952,6 +1986,11 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None, twarze=Non
     av = None
     if avatar is not None:
         av = Image.open(avatar) if isinstance(avatar, str) else avatar
+    # ⭐ Awatar: jeżeli mamy ramkę twarzy na zdjęciu okładkowym, kółko robimy z TEJ twarzy.
+    # Zdjęcie profilowe z bazy zostaje drogą awaryjną (brak ramki albo brak okładki).
+    _av_twarz = _awatar_z_twarzy(cover_photo, cover_twarz)
+    if _av_twarz is not None:
+        av = _av_twarz
     for i, s in enumerate(slides, start=1):
         look = s.get("look") or {}
         eff = _apply_look(brand, look)
