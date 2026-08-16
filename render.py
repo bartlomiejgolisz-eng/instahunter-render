@@ -351,6 +351,10 @@ class Brand:
     story_scrim: float = 1.0        # mnożnik przyciemnienia zdjęcia (stories)
     photo_blur: float = 0.0         # rozmycie (blur) zdjęcia w tle, px
     skora: str = ""                 # "" = tło w kolorze marki; "kolaz" = rozmyte zdjęcie z okładki
+    kadr: str = "lagodny"           # ⭐ 16.08: DOMYŚLNIE ŁAGODNY (decyzja Bartka — także
+                                    # w formacie edukacyjnym, który już stoi na produkcji).
+                                    # "twarz-nad" = stary kadr, wypełniający twarzą pole
+                                    # nad napisem; zostawiony jako droga powrotu.
     tlo_cel: float = 66.0           # docelowa jasność rozmytego tła (0-255) w skórze „kolaz"
                                     # ⭐ 66 = wybór Bartka 16.08 („średnio jest najlepsze")
     tlo_foto: object = None         # zdjęcie okładkowe podstawiane pod plansze w skórze „kolaz"
@@ -1097,7 +1101,54 @@ def _plan_kadru(iw, ih, twarz, w, h, dol_bezpieczny, gora_min=36, max_zoom=2.4):
         return None
 
 
-def _kadr_twarz_nad(img, twarz, w, h, dol_bezpieczny, gora_min=36, max_zoom=2.4):
+def _plan_kadru_lagodny(iw, ih, twarz, w, h, dol_bezpieczny, gora_min=36,
+                        max_zoom=1.25, cel_y=0.30):
+    """⭐⭐⭐ 16.08 wieczorem — KADR ŁAGODNY. Bartek: „nie wydaje mi się, żeby w tym zapisie
+    chodziło o to, że twarz ma być NAD napisem. Chodziło o to, że twarz NACHODZIŁA na napis…
+    niech to będzie wykadrowane na wszystkich zdjęciach tak samo, delikatne zmiany, a nie
+    takie, że tak bardzo przybliżamy."
+    ⛔ RÓŻNICA WOBEC `_plan_kadru`: tamten LICZY SKALĘ TAK, ŻEBY DÓŁ TWARZY DOTYKAŁ LINII
+    NAPISU (`sk = max(sk, cel / fy2)`) — czyli wypełnia twarzą całe pole nad tekstem i przy
+    sylwetce w centrum kadru wchodzi w zdjęcie nawet 2,4×. To była nadinterpretacja reguły
+    „napis nie na twarzy".
+    ⭐ TU JEST ODWROTNIE: zaczynamy od kadru BEZ POWIĘKSZANIA, ustawiamy twarz na stałej
+    wysokości kadru (domyślnie 30% od góry) i powiększamy WYŁĄCZNIE wtedy, gdy inaczej napis
+    wszedłby na twarz — i tylko do 1,25×. Dzięki temu wszystkie zdjęcia w formacie wyglądają
+    na kadrowane tą samą ręką."""
+    try:
+        if not twarz or len(twarz) < 4 or iw <= 0 or ih <= 0:
+            return None
+        x, y, fw, fh = [float(v) for v in twarz[:4]]
+        if fw <= 0 or fh <= 0:
+            return None
+        fy1, fy2 = y / 100.0 * ih, (y + fh) / 100.0 * ih
+        fx1, fx2 = x / 100.0 * iw, (x + fw) / 100.0 * iw
+        s_fit = max(w / float(iw), h / float(ih))
+        cel = float(dol_bezpieczny)
+        odstep = 24.0                      # powietrze między brodą a napisem
+        sk = s_fit
+        for _ in range(9):
+            rw, rh = iw * sk, ih * sk
+            if rw < w - 0.5 or rh < h - 0.5:
+                break
+            oy = h * cel_y - (fy1 + fy2) / 2.0 * sk
+            oy = min(0.0, max(h - rh, oy))
+            ly = max(0.0, min(rh - h, -oy))
+            g1, g2 = fy1 * sk - ly, fy2 * sk - ly
+            if g1 >= gora_min and g2 <= cel - odstep:
+                ox = min(0.0, max(w - rw, w / 2.0 - (fx1 + fx2) / 2.0 * sk))
+                lx = max(0, min(int(rw - w), int(round(-ox))))
+                return (sk, lx, int(round(ly)), g1, g2)
+            if sk >= s_fit * max_zoom - 1e-9:
+                break
+            sk = min(sk * 1.06, s_fit * max_zoom)
+        return None
+    except Exception:
+        return None
+
+
+def _kadr_twarz_nad(img, twarz, w, h, dol_bezpieczny, gora_min=36, max_zoom=2.4,
+                    lagodny=False):
     """Wycina kadr w×h tak, żeby CAŁA twarz stanęła NAD linią `dol_bezpieczny`.
 
     ⛔⛔ DLACZEGO STARE PODEJŚCIE NIE DZIAŁAŁO (zmierzone 14.08 na gosia-03): zdjęcie
@@ -1115,7 +1166,10 @@ def _kadr_twarz_nad(img, twarz, w, h, dol_bezpieczny, gora_min=36, max_zoom=2.4)
         if img is None:
             return None
         iw, ih = img.size
-        plan = _plan_kadru(iw, ih, twarz, w, h, dol_bezpieczny, gora_min=gora_min, max_zoom=max_zoom)
+        plan = (_plan_kadru_lagodny(iw, ih, twarz, w, h, dol_bezpieczny, gora_min=gora_min)
+                if lagodny else
+                _plan_kadru(iw, ih, twarz, w, h, dol_bezpieczny, gora_min=gora_min,
+                            max_zoom=max_zoom))
         if plan is None:
             return None
         sk, lx, ly, g1, g2 = plan
@@ -1147,7 +1201,8 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
         _m = _metryka_okladki(ImageDraw.Draw(base), brand, title, subtitle, stopka)
         _y_doc = max(120, H - 158 - _m["block_h"] - int(title_shift or 0))
         _zrodlo = _warm_grade(photo.convert("RGB"))
-        _wyc = _kadr_twarz_nad(_zrodlo, twarz, W, H, _y_doc - 34)
+        _lagodny = str(getattr(brand, "kadr", "") or "lagodny").strip().lower() != "twarz-nad"
+        _wyc = _kadr_twarz_nad(_zrodlo, twarz, W, H, _y_doc - 34, lagodny=_lagodny)
         if _wyc is not None:
             ph, _tw = _wyc
             _kadr_ok = True
@@ -1874,7 +1929,11 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None, twarze=Non
                 _zapas, _zapas_i = (_c, _tw), _i
             if _y_doc is None or not _tw:
                 continue
-            if _plan_kadru(_c.size[0], _c.size[1], _tw, W, H, _y_doc - 34) is not None:
+            _lag0 = str(getattr(_eff0, "kadr", "") or "lagodny").strip().lower() != "twarz-nad"
+            _plan_test = (_plan_kadru_lagodny(_c.size[0], _c.size[1], _tw, W, H, _y_doc - 34)
+                          if _lag0 else
+                          _plan_kadru(_c.size[0], _c.size[1], _tw, W, H, _y_doc - 34))
+            if _plan_test is not None:
                 _zapas, _zapas_i = (_c, _tw), _i
                 break
         if _zapas is not None:
