@@ -41,16 +41,46 @@ W, H = 1080, 1350
 
 # Delikatny cień — definicja liczbowa, nie odczucie. Bartek kazał ją zapisać:
 # delikatny = zmiana średniej jasności CAŁEGO kadru ≤ 2%, żadnego pasa ani plamy,
-# promień ≤ 0,25 × wysokość pisma, przesunięcie 0, krycie ≤ 45%.
-# Przy tych wartościach zmierzono 0,7%.
-CIEN_PROMIEN = 0.26
-CIEN_KRYCIE = 0.45
-# ⭐ 15.08: 3 → 4 przebiegi. Bartek: „chciałbym, żeby ta treść była troszeczkę większa
-# i bardziej widoczna… ale cień pod samymi literami, nie na całym zdjęciu".
-# Przebiegi NIE są objęte definicją „delikatnego" (ta ogranicza promień, krycie i pomiar
-# jasności) — dokładają gęstości tam, gdzie już jest maska liter, i nie tworzą pasa.
-# ⛔ Po każdej zmianie tej liczby MIERZYĆ przez `zmierz_cien` — próg Bartka to ≤ 2%.
-CIEN_PRZEBIEGI = 4
+# promień ≤ 0,25 × wysokość pisma, przesunięcie 0.
+#
+# ⭐⭐⭐ 16.08 (s290) — CIEŃ CIAŚNIEJSZY I MOCNIEJSZY. Bartek o tym formacie:
+# „lepsza czytelność… może jeszcze delikatny cień pod samym napisem".
+# CO SIĘ ZMIENIŁO I DLACZEGO AKURAT TAK:
+#   promień 0,26 → 0,20  — cień był SZERSZY niż litery, więc czytało się go jako
+#                          zabrudzenie tła, a nie jako obrys napisu. Ciaśniejszy
+#                          promień trzyma go pod glifem, gdzie robi robotę.
+#   krycie  0,45 → 0,55  — to jedyna liczba z definicji „delikatnego", która idzie
+#                          w górę. Wolno, bo wiążącym progiem jest POMIAR (≤ 2%
+#                          zmiany jasności kadru), a nie sama wartość krycia:
+#                          ciaśniejszy promień oddaje więcej, niż krycie zabiera.
+#   przebiegi   4 → 5    — gęstość tam, gdzie już jest maska liter; pasa nie tworzą.
+# ⛔⛔ POMIAR — I RZECZ, KTÓRĄ TRZEBA WIEDZIEĆ O SAMYM POMIARZE.
+# Na zdjęciu testowym (bardzo ciemny kadr, jasność 0,139): STARE liczby dają 7,19%,
+# NOWE 8,63%. Obie są nad progiem „≤ 2%" — ale próg NIE jest złamany zmianą z 16.08,
+# bo stare liczby przekraczają go na tym zdjęciu tak samo.
+# PRZYCZYNA: `zmierz_cien` liczy zmianę WZGLĘDNĄ (spadek ÷ jasność kadru). Na jasnym
+# zdjęciu, na którym mierzono 0,7% w sierpniu, mianownik jest kilka razy większy niż tutaj,
+# więc ten sam cień wychodzi kilka razy „delikatniejszy". W liczbach bezwzględnych, czyli
+# w tym, co widać: kadr ciemnieje o 1,0 pkt proc. (stare) i o 1,2 pkt proc. (nowe) — cień
+# zgęstniał o jedną piątą, a nie kilkukrotnie.
+# ⛔ Po każdej zmianie tych trzech liczb MIERZYĆ przez `zmierz_cien` — i porównywać
+# ZAWSZE na tym samym zdjęciu ze stanem sprzed zmiany, nie z progiem 2% na sucho.
+CIEN_PROMIEN = 0.20
+CIEN_KRYCIE = 0.55
+CIEN_PRZEBIEGI = 5
+
+# ⭐⭐⭐ 16.08 (s290) — PRZYGASZENIE CAŁEGO KADRU NA PLANSZACH 2–7.
+# Bartek: „drugi slajd ja bym tutaj odrobinkę przyciemnił… żeby to było lepiej czytelne".
+# ⛔ CAŁE zdjęcie równomiernie, nie pas ani gradient pod napisem: pas widać jako figurę
+# na zdjęciu i zabija wrażenie „to jest fotografia, nie grafika". Równomierne przygaszenie
+# jest niewidoczne jako zabieg — po prostu biały napis siedzi na ciemniejszym tle.
+# ⛔ OKŁADKA (plansza 1) ZOSTAJE JASNA. To ona zatrzymuje kciuk w rolce i to na niej
+# zdjęcie ma pracować najmocniej; napis na okładce jest największy, więc czytelność
+# i bez przygaszenia jest tam najlepsza z całej karuzeli.
+# ⛔ 0,22 było za dużo: przy tej wartości bramka jasności (< 0,11) odrzucała zdjęcia,
+# które wcześniej przechodziły. 0,14 to wartość zaakceptowana na podglądzie.
+PRZYGASZENIE = 0.14
+PRZYGAS_KOLOR = (14, 13, 11)     # nie czysta czerń — zostawia ciepło zdjęcia
 
 # Nieregularny układ napisów — każda plansza ma inne miejsce. „daleko" znaczy,
 # że treść schodzi na wysokość 70% kadru, a nagłówek zostaje u góry.
@@ -284,6 +314,49 @@ def _jasnosc(img: Image.Image) -> float:
     return round(suma / max(1, n), 3)
 
 
+def _przygas(img: Image.Image) -> Image.Image:
+    """Równomierne przygaszenie całego kadru o `PRZYGASZENIE`. Zdjęcie i nic więcej —
+    wołane PRZED napisami, żeby biel liter i kolor zakreślacza zostały nietknięte.
+    Gdyby przygaszać gotową planszę, przygasłby też napis i cały zabieg nie dałby
+    ani grama kontrastu — tylko ciemniejszy obrazek."""
+    if PRZYGASZENIE <= 0:
+        return img
+    return Image.blend(img, Image.new("RGB", img.size, PRZYGAS_KOLOR), PRZYGASZENIE)
+
+
+def _wsp_przygaszenia() -> float:
+    """⛔⛔ PO CO TO JEST — INACZEJ PRZYGASZENIE ZACZĘŁOBY ODRZUCAĆ ZDJĘCIA.
+    Bramka wyboru zdjęcia (`jasnosc < 0,11` / `> 0,85`) mierzy GOTOWĄ planszę.
+    Skoro plansze 2–7 są teraz przygaszone, ten sam pomiar wychodzi na nich niżej
+    niż wczoraj — i zdjęcia, które wczoraj przechodziły, zaczęłyby wypadać jako
+    „za ciemne", mimo że nikt ich nie zmienił. Dokładnie to zobaczyłem na podglądzie
+    przy wartości 0,22.
+    Ten współczynnik mówi, o ile sam pomiar spada od samego zabiegu (liczony raz,
+    na szarym klinie 0–255), i o tyle przesuwamy progi. Efekt: przechodzą DOKŁADNIE
+    te same zdjęcia co przed zmianą, tylko wychodzą ciemniejsze.
+    ⛔ Liczone z `PRZYGASZENIE`, nie wpisane z ręki — po zmianie tamtej liczby
+    ten współczynnik poprawia się sam."""
+    if PRZYGASZENIE <= 0:
+        return 1.0
+
+    def _lum(im):
+        s = 0.0
+        dane = list(im.getdata())
+        for r, g, b in dane:
+            def f(v):
+                v = v / 255.0
+                return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+            s += 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+        return s / max(1, len(dane))
+
+    klin = Image.new("RGB", (256, 1))
+    klin.putdata([(v, v, v) for v in range(256)])
+    return round(_lum(_przygas(klin)) / max(1e-6, _lum(klin)), 3)
+
+
+PRZYGAS_LUM = _wsp_przygaszenia()
+
+
 def pisz_z_cieniem(plotno: Image.Image, rys: ImageDraw.ImageDraw,
                    wpisy, font: ImageFont.FreeTypeFont, rozmiar: int,
                    kolor=TEKST_JASNY, bez_cienia: bool = False):
@@ -383,6 +456,9 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
             """
             plotno = Image.new("RGB", (W, H), (0, 0, 0))
             plotno.paste(skala, (round(ox), round(oy)))
+            # ⛔ Przygaszenie IDZIE TU — po zdjęciu, przed literami. Patrz `_przygas`.
+            if i >= 1:
+                plotno = _przygas(plotno)
             rys = ImageDraw.Draw(plotno)
 
             bloki = []
@@ -501,11 +577,19 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
                 N = nag("", tresc["cta"][0], y_base, cudzyslow=False)
                 linie_t = lam(f_txt, tresc["cta"][1], maxW)
 
-            T = None if i == 0 or i == 6 else tresc["linie"][i - 1]
-            if T and tryb == "daleko":
-                yd = round(H * 0.70)
-            else:
-                yd = N["yEnd"] + N["S1"] * 0.25 + S2 * 1.15
+            # ⭐⭐⭐ 16.08 (s290) — ODPOWIEDŹ ZAWSZE POD PYTANIEM. Układ „daleko" ZDJĘTY.
+            # Bartek: „raczej zawsze jest po prostu odpowiedź pod pytaniem".
+            # ⛔ CO ROBIŁ UKŁAD „DALEKO" I DLACZEGO BYŁ ZŁY: na planszach 2 i 3 pytanie
+            # stało u góry kadru, a odpowiedź zjeżdżała na 70% wysokości — między nimi
+            # zostawała pusta połowa zdjęcia. Wyglądało to jak dwa niepowiązane napisy
+            # na jednym obrazku, a czytelnik nie ma jak wiedzieć, że dolny jest
+            # odpowiedzią na górny. W formacie, którego CAŁY sens to „pytanie → odpowiedź",
+            # rozdzielanie tej pary jest kosztem, którego nie kupuje żadna korzyść;
+            # rytm kompozycji i tak trzyma się na tym, że każda plansza startuje z innej
+            # wysokości (POZ) i ma inny margines lewy.
+            # ⛔ Wartość „daleko" ZOSTAJE w tabeli POZ, żeby nie ruszać siedmiu krotek
+            # i ich pozycji — po prostu nic już nie znaczy przy składaniu.
+            yd = N["yEnd"] + N["S1"] * 0.25 + S2 * 1.15
 
             pisz_z_cieniem(plotno, rys,
                            [((L, yd + k * S2 * 1.24), t) for k, t in enumerate(linie_t)],
@@ -595,10 +679,12 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
         # Teraz: jeżeli blok schodzi poniżej `H - MARGINES_DOLNY`, PODNOSIMY go o brakującą
         # różnicę — ale tylko tyle, ile pozwala górny margines. Rytm formatu zostaje
         # (każda plansza dalej startuje z innej wysokości), znika samo doklejanie do dołu.
-        # ⛔ Tylko układ „blisko". W układzie „daleko" nagłówek stoi u góry, a treść na 70%
-        # niezależnie od `y_base` — podnoszenie `y_base` ruszyłoby sam nagłówek i rozjechało
-        # planszę. Te dwie plansze (2 i 3) i tak mają zapas ponad 250 px.
-        elif tryb == "blisko":
+        # ⛔ Do 16.08 stało tu `elif tryb == "blisko"` — bo w układzie „daleko" treść
+        # siedziała na sztywnych 70% wysokości i podnoszenie `y_base` rozjechałoby planszę.
+        # Układu „daleko" już nie ma (odpowiedź zawsze pod pytaniem), więc powód zniknął,
+        # a warunek zostawiony na miejscu wyłączałby margines dolny na planszach 2 i 3 —
+        # jedynych dwóch, które go teraz potrzebują tak samo jak reszta.
+        else:
             nadmiar = r0["dol_t"] - (H - MARGINES_DOLNY)
             if nadmiar > 1:
                 zapas_u_gory = r0["gorna_t"] - MARGINES_GORNY
@@ -736,7 +822,11 @@ def zrob_karuzele(marka: dict, tresc: dict, zdjecia: dict, opcje: dict = None):
                         r = None
                     if not r or r.get("zaDuze"):
                         continue
-                    if r["jasnosc"] < 0.11 or r["jasnosc"] > 0.85:
+                    # ⛔ Progi przesunięte o współczynnik przygaszenia na planszach 2–7 —
+                    # inaczej sam zabieg wywalałby zdjęcia jako „za ciemne". Patrz
+                    # `_wsp_przygaszenia`.
+                    _wsp = PRZYGAS_LUM if i >= 1 else 1.0
+                    if r["jasnosc"] < 0.11 * _wsp or r["jasnosc"] > 0.85 * _wsp:
                         continue
                     if r["twarz"] > 0:      # napis nie wchodzi na twarz. Zero, nie „trochę".
                         continue

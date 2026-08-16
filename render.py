@@ -1091,10 +1091,21 @@ def render_stat(brand, kicker, figure, label, body, idx, total, avatar=None):
     y = _kicker(base, brand, MARGIN, 360, kicker) if kicker else 360
     # wielka liczba
     ff, fl, _ = _fit_rich(d, figure, brand.font_heavy, 300, 150, 1)
-    y = _draw_rich(base, MARGIN, y + 10, fl, ff, accent, accent, int(ff.size * 1.0))
+    _fy = y + 10
+    y = _draw_rich(base, MARGIN, _fy, fl, ff, accent, accent, int(ff.size * 1.0))
+    # ⛔⛔ 16.08 — DÓŁ WIELKIEJ LICZBY MIERZYMY TUSZEM, NIE METRYKĄ LINII.
+    # Bartek na karcie receh1VWhO4a3UqHA: „3/5 wchodzi na ten napis". _draw_rich zwraca
+    # y + line_h, czyli NOMINALNĄ wysokość linii (ff.size * 1.0). Ukośnik, ogonki (ą, ę)
+    # i cyfry z podcięciem schodzą PONIŻEJ tej wartości — przy 150 px nawet o 20 px.
+    # Label startował więc od pozycji, którą liczba już fizycznie zajmowała.
+    # To ten sam błąd, który naprawialiśmy w render_z2.py (s285): mierz textbbox,
+    # nie zakładaj, że glif mieści się w prostokącie linii.
+    _fig_txt = " ".join(w for _ln in fl for w, _ in _ln)
+    if _fig_txt:
+        y = max(y, d.textbbox((MARGIN, _fy), _fig_txt, font=ff)[3])
     if label:
         lf, ll, _ = _fit_rich(d, label, brand.font_heavy, 76, 48, 3)
-        y = _draw_rich(base, MARGIN, y + 24, ll, lf, white, accent, int(lf.size * 1.1))
+        y = _draw_rich(base, MARGIN, y + 28, ll, lf, white, accent, int(lf.size * 1.1))
     if body:
         bf, bl, _ = _fit_rich(d, body, brand.font_med, 46, 34, 3)
         by = min(max(y + 60, 980), H - 150 - int(bf.size * 1.34) * len(bl))
