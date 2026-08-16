@@ -238,7 +238,21 @@ class Brand:
         fam = resolve_font_family(self.font_family, self.font_family_body)
         self.font_heavy = fam["head"]
         self.font_bold = fam["head"]
-        self.font_med = fam["head"]
+        # ⛔⛔ 16.08 (s289) — TU DRUGA CZCIONKA KLIENTA NIE ROBIŁA NIC W KARUZELACH.
+        # Stało tu `self.font_med = fam["head"]`, a `font_med` niesie CAŁĄ treść plansz
+        # karuzeli (akapit pod nagłówkiem, punkty listy, etykiety wykresu, kolumny
+        # porównania, tekst CTA — linie 916, 1004, 1153, 1362 i dalej). Pole „Brand —
+        # czcionka tekstowa" trafiało wyłącznie do `font_body`, którego karuzele nie
+        # używają w ogóle (tylko stories). Skutek: u Małgorzaty Poppins na nagłówkach
+        # I na treści, a Montserrat z brandbooka nie pojawiał się na żadnej planszy —
+        # dokładnie to, co Bartek zobaczył jako „złe czcionki w karuzeli edukacyjnej".
+        # ⭐ Teraz treść idzie krojem TEKSTOWYM, nagłówki nagłówkowym. To jest cała
+        # istota pola „zawsze dwie czcionki": nagłówek woła, tekst się czyta.
+        # ⛔ Skutek uboczny do świadomej akceptacji: krój tekstowy jest lżejszy (dla
+        # Montserrata to Regular, nie SemiBold), więc akapity są cieńsze niż dotąd.
+        # To NIE jest przypadek — para „ciężki nagłówek + lekki tekst" jest właśnie tym,
+        # czego brakowało. Cofnięcie to jedna linia: `fam["body"]` -> `fam["head"]`.
+        self.font_med = fam["body"]
         self.font_body = fam["body"]
 
 
