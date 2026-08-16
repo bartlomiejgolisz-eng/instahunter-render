@@ -58,6 +58,10 @@ FONT_HEAVY = _find_font("SpaceGrotesk-Bold.ttf", "Poppins-Bold.ttf")
 FONT_MED = _find_font("SpaceGrotesk-Medium.ttf", "Poppins-Medium.ttf")
 FONT_BODY = _find_font("SpaceGrotesk-Regular.ttf", "DMSans-Regular.ttf", "Poppins-Regular.ttf")
 FONT_LIGHT = _find_font("SpaceGrotesk-Light.ttf", "SpaceGrotesk-Regular.ttf", "Poppins-Light.ttf")
+# ⭐ SKÓRA „KOLAŻ" — krój odręczny do licznika i nadtytułu. Gdy pliku nie ma w repo fonts/,
+# `_hand()` po cichu wraca do kroju nagłówkowego klienta, więc brak czcionki NIE psuje renderu.
+FONT_HAND = _find_font("Caveat-Bold.ttf", "Caveat-Medium.ttf")
+_HAND_OK = os.path.basename(FONT_HAND).lower().startswith("caveat")
 
 
 def _font_ok(p):
@@ -178,6 +182,115 @@ def _plik(nazwa_pliku):
     return p if os.path.exists(p) else FONT_BOLD
 
 
+
+# ---------- KROJE Z GOOGLE FONTS (pobierane w locie) ----------
+# ⛔⛔⛔ 16.08, DECYZJA BARTKA: „nie może być tak, że po cichu podstawiamy Space Grotesk.
+# My musimy zmienić po prostu wszystkie czcionki… ludzie po prostu podają, jakie mają
+# czcionki. To jest nasza odpowiedzialność."
+# ⭐ DLATEGO: nazwa spoza biblioteki NIE schodzi już na krój zastępczy, dopóki nie
+# spróbujemy jej ŚCIĄGNĄĆ z Google Fonts. Biblioteka w repo `fonts/` zostaje jako to,
+# co działa bez sieci; Google jest drugą drogą, nie pierwszą.
+# ⛔ Ściągamy RAZ i trzymamy w cache na dysku usługi — render nie może zależeć od tego,
+# czy Google odpowie akurat w tej sekundzie. Gdy wszystko zawiedzie, wracamy dokładnie
+# do starego zachowania, więc ta zmiana NIE MOŻE niczego popsuć.
+_GF_DIR = os.environ.get("IH_FONT_CACHE", "/tmp/ih-fonts")
+_GF_UA = "Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1)"   # UA bez woff2 → Google oddaje .ttf
+_GF_PAMIEC = {}
+_GF_LOCK = threading.Lock()
+
+
+def _gf_slug(nazwa):
+    return "".join(c if c.isalnum() else "-" for c in str(nazwa).lower()).strip("-")
+
+
+def _gf_zapisz_ttf(dane, cel):
+    """Zapisuje pobrany plik jako .ttf. woff2 przepuszczamy przez fontTools (jeśli jest)."""
+    if dane[:4] in (b"\x00\x01\x00\x00", b"true", b"ttcf") or dane[:4] == b"OTTO":
+        with open(cel, "wb") as f:
+            f.write(dane)
+        return True
+    if dane[:4] == b"wOF2":
+        try:
+            import io as _io
+            from fontTools.ttLib import TTFont
+            f = TTFont(_io.BytesIO(dane))
+            f.flavor = None
+            f.save(cel)
+            return True
+        except Exception:
+            return False
+    return False
+
+
+def _gf_pobierz(nazwa, wagi):
+    """Nazwa rodziny + lista wag do spróbowania -> ścieżka do pliku .ttf albo None."""
+    import urllib.parse
+    import urllib.request
+    klucz = (_gf_slug(nazwa), tuple(wagi))
+    if klucz in _GF_PAMIEC:
+        return _GF_PAMIEC[klucz]
+    cel = os.path.join(_GF_DIR, "%s-%d.ttf" % (_gf_slug(nazwa), wagi[0]))
+    brak = cel + ".brak"
+    if os.path.exists(cel) and os.path.getsize(cel) > 4000:
+        _GF_PAMIEC[klucz] = cel
+        return cel
+    # ⛔ NEGATYWNY CACHE: jeżeli tej rodziny nie udało się ściągnąć w ciągu ostatniej doby,
+    # nie próbujemy znowu przy każdym renderze. Bez tego jeden literówkowy krój w profilu
+    # dokładałby kilkanaście sekund do KAŻDEJ karuzeli tego klienta.
+    try:
+        import time as _t
+        if os.path.exists(brak) and (_t.time() - os.path.getmtime(brak)) < 86400:
+            _GF_PAMIEC[klucz] = None
+            return None
+    except Exception:
+        pass
+    with _GF_LOCK:
+        if os.path.exists(cel) and os.path.getsize(cel) > 4000:
+            _GF_PAMIEC[klucz] = cel
+            return cel
+        try:
+            os.makedirs(_GF_DIR, exist_ok=True)
+        except Exception:
+            _GF_PAMIEC[klucz] = None
+            return None
+        import time as _t
+        koniec = _t.time() + 12.0     # twardy budżet: render nie czeka na Google w nieskończoność
+        rodzina = urllib.parse.quote(str(nazwa).strip())
+        for waga in wagi:
+            if _t.time() > koniec:
+                break
+            for adres in ("https://fonts.googleapis.com/css2?family=%s:wght@%d" % (rodzina, waga),
+                          "https://fonts.googleapis.com/css?family=%s:%d&subset=latin-ext"
+                          % (rodzina, waga)):
+                try:
+                    zad = urllib.request.Request(adres, headers={"User-Agent": _GF_UA})
+                    css = urllib.request.urlopen(zad, timeout=8).read().decode("utf-8", "replace")
+                except Exception:
+                    continue
+                linki = []
+                for kawalek in css.split("url(")[1:]:
+                    linki.append(kawalek.split(")")[0].strip("\"'"))
+                linki = [u for u in linki if u.startswith("http")]
+                linki.sort(key=lambda u: (0 if u.endswith(".ttf") else 1))
+                for u in linki[:3]:
+                    try:
+                        dane = urllib.request.urlopen(
+                            urllib.request.Request(u, headers={"User-Agent": _GF_UA}),
+                            timeout=12).read()
+                    except Exception:
+                        continue
+                    if _gf_zapisz_ttf(dane, cel) and _font_ok(cel):
+                        _GF_PAMIEC[klucz] = cel
+                        return cel
+        try:
+            with open(brak, "w") as f:
+                f.write("brak")
+        except Exception:
+            pass
+        _GF_PAMIEC[klucz] = None
+        return None
+
+
 def resolve_font_family(name, name_body=""):
     """Dwa pola z profilu klienta -> PARA ścieżek {head, body}.
 
@@ -187,18 +300,31 @@ def resolve_font_family(name, name_body=""):
     ⛔ Sygnatura z jednym argumentem dalej działa (stare wywołania nie pękną).
     """
     k_head = _klucz_kroju(name)
-    krój_h = KROJE.get(k_head) or FONT_PAIRINGS.get(k_head) or KROJE["space grotesk"]
+    krój_h = KROJE.get(k_head) or FONT_PAIRINGS.get(k_head)
+    plik_head = None
+    if not krój_h and str(name or "").strip():
+        # ⭐ nieznana nazwa: NAJPIERW próbujemy ściągnąć ją z Google Fonts (patrz `_gf_pobierz`),
+        # dopiero potem schodzimy na krój zastępczy
+        plik_head = _gf_pobierz(name, (700, 800, 600, 500, 400))
+    if not krój_h:
+        krój_h = KROJE["space grotesk"]
 
     k_body = _klucz_kroju(name_body)
     if k_body in OZDOBNE_NIE_DO_CZYTANIA:
         k_body = ""          # krój plakatowy w polu tekstowym = traktujemy jak brak
+    sciezka_body = None
     if k_body and k_body in KROJE:
         plik_body = KROJE[k_body]["body"]
     else:
+        if k_body:
+            # ⭐ druga czcionka klienta też jedzie przez Google, zanim damy partnera z tabeli.
+            # Wagi od najlżejszej: pole TEKSTOWE ma się CZYTAĆ, nie krzyczeć.
+            sciezka_body = _gf_pobierz(name_body, (400, 500, 300, 600))
         partner = PARTNER_DO_CZYTANIA.get(k_head, "lato")
         plik_body = KROJE.get(partner, KROJE["lato"])["body"]
 
-    return {"head": _plik(krój_h["head"]), "body": _plik(plik_body)}
+    return {"head": plik_head or _plik(krój_h["head"]),
+            "body": sciezka_body or _plik(plik_body)}
 
 
 # ---------- BRAND ----------
@@ -224,6 +350,10 @@ class Brand:
     cover_scrim: float = 1.0        # mnożnik przyciemnienia zdjęcia okładki (karuzela)
     story_scrim: float = 1.0        # mnożnik przyciemnienia zdjęcia (stories)
     photo_blur: float = 0.0         # rozmycie (blur) zdjęcia w tle, px
+    skora: str = ""                 # "" = tło w kolorze marki; "kolaz" = rozmyte zdjęcie z okładki
+    tlo_cel: float = 66.0           # docelowa jasność rozmytego tła (0-255) w skórze „kolaz"
+                                    # ⭐ 66 = wybór Bartka 16.08 („średnio jest najlepsze")
+    tlo_foto: object = None         # zdjęcie okładkowe podstawiane pod plansze w skórze „kolaz"
     avatar_on: bool = True          # awatar na slajdach treści
     font_heavy: str = FONT_HEAVY
     font_bold: str = FONT_BOLD
@@ -313,6 +443,11 @@ def _ink_on_bg(brand):
 def _sec_on_bg(brand):
     """Tekst POMOCNICZY na tle marki (auto-kontrast): jasne tlo -> przyciemniony
     taupe (czytelny), ciemne tlo -> taupe jak dotad."""
+    # ⛔ 16.08, UWAGA BARTKA do skóry „kolaż": „te napisy są troszeczkę za bardzo
+    # niewidoczne". Na płaskim tle marki taupe czyta się dobrze, ale na rozmytym zdjęciu
+    # gubi się w plamach światła. W tej skórze tekst pomocniczy idzie znacznie bliżej bieli.
+    if _kolaz(brand):
+        return _mix(hex2rgb(brand.taupe), hex2rgb(brand.white), 0.45)
     if _is_light_bg(brand):
         return _mix((24, 22, 18), hex2rgb(brand.taupe), 0.42)
     return hex2rgb(brand.taupe)
@@ -461,6 +596,8 @@ def _accent_bar(base, brand):
 def _ornaments(base, brand, strong=False):
     """Geometryczne kółka (tech/AI) — widoczne, ale eleganckie (dwa koncentryczne).
     strong=True (okładka na zdjęciu) = wyraźniejsze, żeby nie zlały się z fotografią."""
+    if _kolaz(brand):
+        return
     return  # kółka ozdobne USUNIĘTE (Bartek, s100): żadnych zdobień na karuzelach
     if not brand.ornaments:
         return
@@ -479,6 +616,109 @@ def _ornaments(base, brand, strong=False):
     # koło prawy-dół
     d.ellipse([W - 170, H - 360, W - 170 + 200, H - 360 + 200], outline=tp + (a3,), width=w3)
     base.alpha_composite(layer)
+
+
+def _kolaz(brand):
+    return str(getattr(brand, "skora", "") or "").strip().lower() == "kolaz"
+
+
+def _hand(brand):
+    """Krój odręczny albo — gdy go nie ma w repo — nagłówkowy krój klienta."""
+    return FONT_HAND if _HAND_OK else brand.font_bold
+
+
+def _jitter(seed, i, skala=1.0):
+    """Powtarzalne „drżenie ręki": ten sam kadr zawsze wychodzi tak samo."""
+    h = (seed * 1103515245 + i * 12345) & 0x7FFFFFFF
+    return ((h % 1000) / 500.0 - 1.0) * skala
+
+
+def _kreska_reka(d, punkty, kolor, szer=6, seed=1, drzenie=1.0):
+    """⭐ METODA SZKICU z formatu „kolaż odręczny": każdy kształt rysowany DWA RAZY —
+    raz cieńszą, przygaszoną kreską z innym drżeniem, raz pełną. Druga kreska nigdy nie
+    trafia w pierwszą, dokładnie tak jak przy rysowaniu ołówkiem. Kształt ma być
+    rozpoznawalny, ale nie „ładny i równy" — równa ikona psuje cały efekt."""
+    # ⛔ 16.08, UWAGA BARTKA: „niech te strzałki nie wyglądają, jakby je rysowało
+    # pięcioletnie dziecko… twórzmy je prosto, obrazkowo, ale nie aż tak. Wszystko ma
+    # swoje granice." Drżenie zeszło z 3,4 px na 1,0 px, a druga kreska jest tylko
+    # muśnięciem (krycie 70 zamiast 150). Kształt ma być CZYSTY i od razu czytelny —
+    # ręka ma być widoczna w niedoskonałości linii, nie w krzywiźnie kształtu.
+    for sd, sz, alfa in ((seed + 7, max(2, int(szer * 0.6)), 70), (seed, szer, 255)):
+        pkt = []
+        for i, (x, y) in enumerate(punkty):
+            pkt.append((x + _jitter(sd, i, drzenie), y + _jitter(sd, i + 91, drzenie)))
+        d.line(pkt, fill=tuple(kolor) + (alfa,), width=sz, joint="curve")
+
+
+def _strzalka_reka(base, brand, x, y0, y1, seed=1):
+    """⭐ STRZAŁKA MIĘDZY KROKAMI — ŁUK, NIE KRESKA Z LINIJKI.
+    ⛔ 16.08, druga uwaga Bartka: „zróbmy takie strzałki jak w tym poście Łukasza, taka
+    półokrągła… widać, że narysowane, nieidealne, ale nie takie". Wzorzec to strzałka
+    „przesuń" z okładki posta „Poznaj mnie lepiej": cienka, płytko wygięta krzywa
+    z małym grotem z dwóch krótkich kresek. Nie zygzak i nie prosta z trójkątem.
+    ⭐ Kształt liczy krzywa Béziera (czyli jest gładki i przewidywalny), a ręka wchodzi
+    dopiero jako mikro-drżenie 0,6 px i druga, ledwie widoczna kreska obok pierwszej."""
+    import math
+    d = ImageDraw.Draw(base, "RGBA")
+    kolor = _ink_on_bg(brand)
+    wygiecie = max(16, min(30, int((y1 - y0) * 0.34)))
+    p0, p1, p2 = (x, y0), (x + wygiecie, (y0 + y1) / 2.0), (x, y1)
+    luk = []
+    for i in range(19):
+        t = i / 18.0
+        u = 1 - t
+        luk.append((u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0],
+                    u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1]))
+    _kreska_reka(d, luk, kolor, szer=4, seed=seed, drzenie=0.6)
+    # grot: dwie krótkie kreski wychodzące z czubka wstecz wzdłuż stycznej
+    tx, ty = luk[-1][0] - luk[-3][0], luk[-1][1] - luk[-3][1]
+    dl = math.hypot(tx, ty) or 1.0
+    tx, ty = tx / dl, ty / dl
+    for kat in (2.5, -2.5):
+        cs, sn = math.cos(kat), math.sin(kat)
+        gx, gy = tx * cs - ty * sn, tx * sn + ty * cs
+        _kreska_reka(d, [luk[-1], (luk[-1][0] + gx * 17, luk[-1][1] + gy * 17)],
+                     kolor, szer=4, seed=seed + int(kat * 10), drzenie=0.6)
+
+
+def _plansza_base(brand):
+    """Podłoże planszy środkowej. Domyślnie płaskie tło marki (bez zmian).
+    ⭐ W skórze „kolaz" pod spód idzie ZDJĘCIE Z OKŁADKI, mocno rozmyte i przygaszone —
+    karuzela trzyma się jednego kadru od pierwszej do ostatniej planszy, a treść dostaje
+    powietrze zamiast płaskiej płachty koloru."""
+    base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
+    foto = getattr(brand, "tlo_foto", None)
+    if _kolaz(brand) and foto is not None:
+        try:
+            ph = _cover_crop(_warm_grade(foto.convert("RGB")), W, H, centering=(0.5, 0.38))
+            ph = ph.filter(ImageFilter.GaussianBlur(34))
+            base.paste(ph, (0, 0))
+            base = base.convert("RGBA")
+            # ⭐⭐ PRZYGASZENIE LICZONE ZE ZDJĘCIA, NIE WPISANE NA SZTYWNO.
+            # ⛔ Bartek (16.08): „jak jest zdjęcie jasne, to trzeba przyciemnić, żeby to
+            # po prostu zawsze było wszystko czytelne". Stała 58% dobrana na ciemnym kadrze
+            # z Krakowa rozjaśniłaby selfie przy oknie do poziomu, na którym biały napis
+            # przestaje istnieć. Więc mierzymy JASNOŚĆ ROZMYTEGO KADRU i dokładamy tyle
+            # warstwy, ile trzeba, żeby tło wylądowało na ustalonym poziomie.
+            # ⭐ Cel jest jeden dla wszystkich klientów, bo liczy się kontrast z tekstem,
+            # a nie to, jakie kto ma zdjęcia.
+            _sz = ph.convert("L").resize((64, 80))
+            _jasnosc = sum(_sz.getdata()) / float(64 * 80)
+            _lbg = _luma(hex2rgb(brand.bg))
+            _cel = 206.0 if _is_light_bg(brand) else float(getattr(brand, "tlo_cel", 46.0))
+            try:
+                _a = (_jasnosc - _cel) / (_jasnosc - _lbg)
+            except ZeroDivisionError:
+                _a = 0.55
+            _a = max(0.30, min(0.90, _a))
+            base.alpha_composite(Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (int(255 * _a),)))
+            _gradient_od(base, True, 0.55, 0.34)
+            _vignette(base, brand)
+            return base
+        except Exception:
+            base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
+    _vignette(base, brand)
+    return base
 
 
 def _vignette(base, brand):
@@ -515,6 +755,10 @@ def _draw_tracked(d, xy, text, font, fill, tracking=8):
     return x
 
 
+def idx_seed(t):
+    return (sum(ord(c) for c in str(t)) % 97) + 1
+
+
 def _kicker(base, brand, x, y, text):
     """Mały koralowy nagłówek 'eyebrow' WERSALIKAMI + krótka kreska (editorial).
 
@@ -527,6 +771,23 @@ def _kicker(base, brand, x, y, text):
     if not text:
         return y
     d = ImageDraw.Draw(base)
+    # ⭐ SKÓRA „KOLAŻ": nadtytuł też idzie ręką i BEZ wersalików — wersaliki z trackingiem
+    # czytają się jak nagłówek sekcji w prezentacji, a tu ma być dopisek na marginesie.
+    if _kolaz(brand):
+        f = _f(_hand(brand), 46)
+        txt = str(text).strip()
+        while txt and d.textlength(txt, font=f) > (W - x - MARGIN - 90):
+            txt = txt[:-2]
+        sh = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        ImageDraw.Draw(sh).text((x + 2, y - 8), txt, font=f, fill=(0, 0, 0, 170))
+        base.alpha_composite(sh.filter(ImageFilter.GaussianBlur(5)))
+        d = ImageDraw.Draw(base)
+        d.text((x, y - 10), txt, font=f, fill=hex2rgb(brand.accent))
+        koniec = x + d.textlength(txt, font=f)
+        _kreska_reka(ImageDraw.Draw(base, "RGBA"),
+                     [(koniec + 14, y + 22), (koniec + 78, y + 18)],
+                     hex2rgb(brand.accent), szer=4, seed=idx_seed(txt))
+        return y + 54
     txt = text.upper()
     dost = W - x - MARGIN - 80          # 80 px zostawiamy na kreskę za napisem
     rozmiar, tracking = 28, 8
@@ -564,6 +825,15 @@ def _header(base, brand, idx, total, shadow=False):
     if idx == 1:
         return
     pg = f"{idx:02d}/{total:02d}"
+    # ⭐ SKÓRA „KOLAŻ": licznik pisany ręką, bielą — ma wyglądać na dopisek, nie na etykietę
+    # interfejsu. Bartek (16.08): „dwa na osiem może być napisane takim stylem pisanym".
+    if _kolaz(brand):
+        pf = _f(_hand(brand), 52)
+        sh = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        ImageDraw.Draw(sh).text((MARGIN + 2, 48), pg, font=pf, fill=(0, 0, 0, 190))
+        base.alpha_composite(sh.filter(ImageFilter.GaussianBlur(5)))
+        ImageDraw.Draw(base).text((MARGIN, 46), pg, font=pf, fill=hex2rgb(brand.white))
+        return
     pf = _f(brand.font_bold, 30)
     if shadow:  # cień pod licznikiem na planszy fotograficznej (czytelność na każdym tle)
         sh = Image.new("RGBA", base.size, (0, 0, 0, 0))
@@ -642,8 +912,11 @@ def _avatar(base, brand, photo, cx, cy, r, ring_w=6, center=(0.5, 0.42)):
         return
     d = 2 * r
     base.alpha_composite(_circle(photo, d, center), (int(cx - r), int(cy - r)))
+    # ⭐ SKÓRA „KOLAŻ": pierścień BIAŁY. Bartek (16.08): „kółko jest białe". Na rozmytym
+    # zdjęciu zielona obwódka gubi się w tle, biała trzyma kadr i wpisuje się w minimalizm.
+    _ring = hex2rgb(brand.white) if _kolaz(brand) else hex2rgb(brand.accent)
     ImageDraw.Draw(base).ellipse([cx - r, cy - r, cx + r, cy + r],
-                                 outline=hex2rgb(brand.accent), width=ring_w)
+                                 outline=_ring, width=ring_w)
 
 
 # ---------- SIATKA BEZPIECZEŃSTWA OKŁADKI (deterministyczny guard) ----------
@@ -855,7 +1128,7 @@ def _kadr_twarz_nad(img, twarz, w, h, dol_bezpieczny, gora_min=36, max_zoom=2.4)
 
 # ---------- SLAJDY ----------
 def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=None, title_shift=0,
-                 twarz=None, stopka=None):
+                 twarz=None, stopka=None, chrom=True):
     """Okładka. Ze zdjęciem = pełnoklatkowe foto+scrim; bez = tekstowa z badge liczby.
 
     ⭐ `twarz` = ramka [x, y, w, h] w PROCENTACH zdjęcia (pole „Twarz — ramka" w bazie).
@@ -923,7 +1196,8 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
         _vignette(base, brand)
     _accent_bar(base, brand)
     _ornaments(base, brand, strong=on_photo)
-    _header(base, brand, idx, total, shadow=on_photo)
+    if chrom:
+        _header(base, brand, idx, total, shadow=on_photo)
     d = ImageDraw.Draw(base)
     white, accent, taupe = _ink_on_bg(brand), hex2rgb(brand.accent), _sec_on_bg(brand)
 
@@ -999,15 +1273,15 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
         if tagline:
             gf, gl, _ = _fit_rich(d, tagline, brand.font_med, 42, 32, 2)
             _draw_rich(base, MARGIN, y + 44, gl, gf, sec, accent, int(gf.size * 1.28))
-    _progress(base, brand, idx, total)
+    if chrom:
+        _progress(base, brand, idx, total)
     return base.convert("RGB")
 
 
 def render_content(brand, number, heading, body, idx, total, avatar=None, kicker=None):
     """Slajd treściowy: eyebrow (lub duża cyfra) + czysty biały nagłówek + taupe treść.
     Bez numeru i kickera = 'statement' (nagłówek większy, wyżej). Awatar w prawym górnym rogu."""
-    base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
-    _vignette(base, brand)
+    base = _plansza_base(brand)
     _accent_bar(base, brand)
     if avatar is None:
         _ornaments(base, brand)
@@ -1044,8 +1318,7 @@ def render_content(brand, number, heading, body, idx, total, avatar=None, kicker
 
 def render_list(brand, number, heading, items, idx, total, avatar=None, kicker=None):
     """Slajd punktowany (framework / 'wart zapisania'): nagłówek + koralowe ptaszki."""
-    base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
-    _vignette(base, brand)
+    base = _plansza_base(brand)
     _accent_bar(base, brand)
     if avatar is None:
         _ornaments(base, brand)
@@ -1101,8 +1374,7 @@ def render_list(brand, number, heading, items, idx, total, avatar=None, kicker=N
 
 def render_stat(brand, kicker, figure, label, body, idx, total, avatar=None):
     """Slajd statystyki: duża koralowa liczba/% + biały label + taupe kontekst."""
-    base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
-    _vignette(base, brand)
+    base = _plansza_base(brand)
     _accent_bar(base, brand)
     if avatar is None:
         _ornaments(base, brand)
@@ -1140,8 +1412,7 @@ def render_stat(brand, kicker, figure, label, body, idx, total, avatar=None):
 
 def render_chart(brand, kicker, heading, bars, idx, total, avatar=None):
     """Slajd wykresu: poziome słupki. bars = [(label, value_0_100, highlight_bool)]."""
-    base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
-    _vignette(base, brand)
+    base = _plansza_base(brand)
     _accent_bar(base, brand)
     if avatar is None:
         _ornaments(base, brand)
@@ -1210,8 +1481,7 @@ def render_porownanie(brand, kicker, heading, lewa, punkty_l, prawa, punkty_p, i
     Lewa kolumna = to, co NIE działa (iksy, kolor drugoplanowy), prawa = to, co działa
     (ptaszki, kolor marki). Czyta się jednym rzutem oka — dokładnie dlatego, że nie jest
     to „napis na górze, wyjaśnienie na dole"."""
-    base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
-    _vignette(base, brand)
+    base = _plansza_base(brand)
     _accent_bar(base, brand)
     if avatar is None:
         _ornaments(base, brand)
@@ -1336,8 +1606,7 @@ def render_kroki(brand, kicker, heading, kroki, idx, total, avatar=None):
     """⭐ NOWY RODZAJ SLAJDU: OŚ KROKÓW 1 → 2 → 3. Numerowane kółka spięte pionową linią,
     przy każdym tytuł kroku i (opcjonalnie) jedno zdanie wyjaśnienia — `Tytuł | wyjaśnienie`.
     Inaczej niż lista z ptaszkami: tu widać KOLEJNOŚĆ, a nie zbiór."""
-    base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
-    _vignette(base, brand)
+    base = _plansza_base(brand)
     _accent_bar(base, brand)
     if avatar is None:
         _ornaments(base, brand)
@@ -1388,8 +1657,16 @@ def render_kroki(brand, kicker, heading, kroki, idx, total, avatar=None):
     for i, (lt, lo, h) in enumerate(blok):
         # linia łącząca kroki — to ona robi z listy OŚ
         if i < len(blok) - 1:
-            d.line([(MARGIN + r, cy + 2 * r + 6), (MARGIN + r, cy + h + 46 - 6)],
-                   fill=_mix(hex2rgb(brand.bg), _ink_on_bg(brand), 0.30), width=4)
+            # ⭐ SKÓRA „KOLAŻ": zamiast prostej kreski — STRZAŁKA RYSOWANA OD RĘKI.
+            # Bartek (16.08): „pomiędzy jeden, dwa i trzy może być strzałka, która jest
+            # narysowana". Kreska mówi „to jest lista", strzałka mówi „to jest kolejność".
+            if _kolaz(brand):
+                _strzalka_reka(base, brand, MARGIN + r, cy + 2 * r + 10, cy + h + 46 - 10,
+                               seed=i + 3)
+                d = ImageDraw.Draw(base)
+            else:
+                d.line([(MARGIN + r, cy + 2 * r + 6), (MARGIN + r, cy + h + 46 - 6)],
+                       fill=_mix(hex2rgb(brand.bg), _ink_on_bg(brand), 0.30), width=4)
         d.ellipse([MARGIN, cy, MARGIN + 2 * r, cy + 2 * r], outline=accent, width=4)
         num = str(i + 1)
         nw = d.textlength(num, font=nf)
@@ -1412,8 +1689,7 @@ def render_cytat(brand, cytat, autor, idx, total, avatar=None, kicker=None):
     """⭐ NOWY RODZAJ SLAJDU: CYTAT NA CAŁĄ PLANSZĘ. Jedno zdanie, duże, na środku,
     z wielkim znakiem cudzysłowu w kolorze marki. Slajd-oddech: przerywa rytm
     „napis na górze, wyjaśnienie na dole" i daje karuzeli miejsce, w którym oko odpoczywa."""
-    base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
-    _vignette(base, brand)
+    base = _plansza_base(brand)
     _accent_bar(base, brand)
     if avatar is None:
         _ornaments(base, brand)
@@ -1481,10 +1757,16 @@ def render_cta(brand, heading, body, cta, idx, total, photo=None, foto_pelna=Non
         # ⛔ `body` przestaje być rysowane w tej odsłonie. Treść nie znika z karty — zostaje
         # w opisie pod postem. Gdyby kiedyś miała wrócić na planszę, wystarczy `stopka=body`
         # (mechanizm w `_metryka_okladki` zostaje) — ale wtedy wraca też różnica pozycji.
+        # ⛔ 16.08 wieczorem, DRUGA DECYZJA BARTKA (poprzednia była odwrotna, tego samego
+        # dnia): plansza CTA NIE MA licznika „08/08" ani pasków postępu. Skoro to jest
+        # okładka w drugiej odsłonie, ma być tak samo czysta jak pierwsza — zdjęcie,
+        # nagłówek, plakietka i nic więcej. Bartek: „jednak bym to wywalił".
+        # ⭐ Robi to flaga `chrom`, nie podmiana `idx` — numer planszy zostaje prawdziwy
+        # i nadal opisuje pozycję w karuzeli, gdyby kiedyś był potrzebny do czegokolwiek.
         return render_cover(brand, heading, cta or "", "", idx, total,
-                            photo=foto_pelna, twarz=twarz, title_shift=przesun)
-    base = Image.new("RGBA", (W, H), hex2rgb(brand.bg) + (255,))
-    _vignette(base, brand)
+                            photo=foto_pelna, twarz=twarz, title_shift=przesun,
+                            chrom=False)
+    base = _plansza_base(brand)
     _accent_bar(base, brand)
     if photo is None:
         _ornaments(base, brand)
@@ -1601,6 +1883,13 @@ def render_carousel(brand, slides, out_dir, photos=None, avatar=None, twarze=Non
             #   rotację i zapisać w karcie to samo, a nie pierwsze z brzegu.
             if isinstance(info, dict):
                 info["okladka"] = _zapas_i
+    # ⭐ SKÓRA „KOLAŻ": plansze środkowe stoją na TYM SAMYM zdjęciu co okładka i CTA.
+    # Podajemy je przez pole `Brand`, żeby wszystkie renderery plansz dostały je bez zmiany
+    # swoich sygnatur — a `dataclasses.replace` w `_apply_look` przenosi je dalej.
+    try:
+        brand.tlo_foto = cover_photo
+    except Exception:
+        pass
     av = None
     if avatar is not None:
         av = Image.open(avatar) if isinstance(avatar, str) else avatar

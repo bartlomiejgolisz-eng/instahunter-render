@@ -257,6 +257,15 @@ PARTNER_DO_CZYTANIA = {
 }
 
 
+# ⭐ 16.08 — TEN SAM MECHANIZM CO W `render.py`: krój spoza repo próbujemy ŚCIĄGNĄĆ
+# z Google Fonts, zanim podstawimy cokolwiek zastępczego. Jedna funkcja, jeden cache,
+# dwa formaty — nie dwie kopie tej samej logiki.
+try:
+    from render import _gf_pobierz as _gf_pobierz
+except Exception:                                    # render.py niedostępny — stare zachowanie
+    _gf_pobierz = None
+
+
 def _sciezka_czcionki(rodzina: str, naglowek: bool) -> str:
     k = (rodzina or "").strip().lower()
     if not naglowek and k in OZDOBNE_NIE_DO_CZYTANIA:
@@ -267,6 +276,11 @@ def _sciezka_czcionki(rodzina: str, naglowek: bool) -> str:
         p = os.path.join(KATALOG_CZCIONEK, plik)
         if os.path.exists(p):
             return p
+    if k and _gf_pobierz is not None:
+        wagi = (700, 800, 600, 500, 400) if naglowek else (400, 500, 300, 600)
+        z_sieci = _gf_pobierz(rodzina, wagi)
+        if z_sieci:
+            return z_sieci
     # ⛔ Brak czcionki NIE MOŻE wywalić generatora — lepiej gorszy krój niż
     # brak karuzeli. Ale zapisujemy to w raporcie, żeby nie przeszło niezauważone.
     p = os.path.join(KATALOG_CZCIONEK, _ZAPASOWA)
