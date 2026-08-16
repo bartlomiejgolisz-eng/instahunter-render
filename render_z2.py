@@ -322,7 +322,7 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
     albo None, gdy żaden kadr z drabinki nie zmieścił napisu poza twarzą.
 
     marka: { akcent, podklad, czcionkaNag, czcionkaTxt }
-    tresc: { temat, linie:[[zarzut, dopoki] × 6], cta:[haslo, zdanie] }
+    tresc: { zawod, linie:[[pytanie, odpowiedz] × 5], cta:[haslo, zdanie] }
     tw:    [x, y, w, h] ramki twarzy w PROCENTACH obrazu albo None
     """
     gy, gx, tryb = pozycja
@@ -485,7 +485,13 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
             #   7        CTA      — bez zmian
             # ⛔ Pytań jest PIĘĆ, nie sześć: okładka oddała swoje miejsce nagłówkowi.
             if i == 0:
-                N = nag(NAGLOWEK_OKLADKI, tresc.get("zawod", ""), y_base)
+                # ⛔ 16.08 (s289) — ZAWÓD BEZ CUDZYSŁOWU. Zobaczone na pierwszym prawdziwym
+                # renderze: okładka wychodziła „«pośrednik kredytowy»" — a cudzysłów mówi
+                # „ktoś to powiedział". Na planszach 2–6 to prawda (tam stoi cytat z wiadomości
+                # klienta) i cudzysłów ZOSTAJE. Na okładce zawód jest po prostu nazwą — w
+                # cudzysłowie czyta się jak ironia albo jak podważanie. Sam zakreślacz,
+                # krój i miejsce bez zmian, więc warstwa wizualna zostaje 1:1.
+                N = nag(NAGLOWEK_OKLADKI, tresc.get("zawod", ""), y_base, cudzyslow=False)
                 linie_t = []          # ⛔ okładka nie ma dolnej linii. Bartek: „to możemy usunąć"
             elif i <= 5:
                 T = tresc["linie"][i - 1]

@@ -880,8 +880,18 @@ class Z2Zdjecia(BaseModel):
 
 
 class Z2Req(BaseModel):
-    temat: str
-    linie: List[List[str]]                 # 6 × [zarzut, „dopóki…"]
+    # ⛔⛔ 16.08 (s289) — TU SIEDZIAŁ BŁĄD, KTÓRY ZATRZYMAŁ CAŁY NOWY FORMAT.
+    # 15.08 przepisałem render_z2.py na „Najczęstsze pytania, które dostaję jako <ZAWÓD>"
+    # i przestawiłem workera, ale TEGO modelu nie ruszyłem. Skutek: worker posyłał `zawod`
+    # i pięć par [pytanie, odpowiedź], a FastAPI odbijał każde zapytanie z 422, bo brakowało
+    # wymaganego `temat`. W panelu i w Airtable nie było po tym ŚLADU — bramka treści
+    # przepuszczała, scenariusz kończył się „sukcesem", a kart nie było. Zobaczyłem to
+    # dopiero w logu usługi renderującej: „POST /render_z2 422 Unprocessable Entity".
+    # ⭐ REGUŁA: kontrakt ma DWA końce. Zmiana pól w render_z2.py bez zmiany tego modelu
+    # jest zmianą połowiczną — i milczącą, bo pydantic odrzuca zapytanie, zanim czyjkolwiek
+    # kod zdąży zapisać cokolwiek do dziennika.
+    zawod: str
+    linie: List[List[str]]                 # 5 × [pytanie, odpowiedź]
     cta: List[str]                         # [hasło, zdanie]
     zdjecia: Z2Zdjecia
     czcionka_naglowka: str = ""
@@ -896,8 +906,9 @@ class Z2Req(BaseModel):
 def render_z2_endpoint(req: Z2Req, x_api_key: str = Header(default="")):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="bad api key")
-    if len(req.linie) < 6:
-        raise HTTPException(status_code=422, detail="format wymaga 6 linii „to «X» — dopóki…”")
+    # ⛔ PIĘĆ par pytanie–odpowiedź (plansze 2–6). Okładka bierze `zawod`, plansza 7 to CTA.
+    if len(req.linie) < 5:
+        raise HTTPException(status_code=422, detail="format wymaga 5 par [pytanie, odpowiedź]")
     if len(req.cta) < 2:
         raise HTTPException(status_code=422, detail="cta musi mieć hasło i zdanie")
 
@@ -908,8 +919,8 @@ def render_z2_endpoint(req: Z2Req, x_api_key: str = Header(default="")):
         "czcionkaTxt": req.czcionka_tresci,
     }
     tresc = {
-        "temat": req.temat,
-        "linie": [list(l)[:2] for l in req.linie[:6]],
+        "zawod": req.zawod,
+        "linie": [list(l)[:2] for l in req.linie[:5]],
         "cta": list(req.cta)[:2],
     }
     zdjecia = {
