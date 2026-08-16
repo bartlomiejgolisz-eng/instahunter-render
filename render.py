@@ -1462,7 +1462,19 @@ def render_list(brand, number, heading, items, idx, total, avatar=None, kicker=N
 
 
 def render_stat(brand, kicker, figure, label, body, idx, total, avatar=None):
-    """Slajd statystyki: duża koralowa liczba/% + biały label + taupe kontekst."""
+    """Slajd statystyki: duża koralowa liczba/% + biały label + taupe kontekst.
+
+    ⭐⭐ 16.08 wieczorem — CAŁY BLOK WYŚRODKOWANY W KADRZE. Bartek o planszy 03/08 u
+    Agnieszki: „żeby to było wszystko troszeczkę wyżej, żeby bardziej było wypośrodkowane
+    w całym kadrze".
+    ⛔ SKĄD SIĘ BRAŁA TA DZIURA: układ był POSKLEJANY ZE STAŁYCH. Nadtytuł startował zawsze
+    z 360, a akapit pod spodem był PRZYPIĘTY do 980 (`max(y + 60, 980)`), więc przy krótkiej
+    liczbie i krótkim label'u między nimi zostawała pusta połowa planszy, a całość siedziała
+    za nisko. Teraz najpierw MIERZYMY cały blok (nadtytuł + liczba + label + akapit razem
+    z odstępami), a potem stawiamy go pośrodku pola między nagłówkiem a paskiem postępu.
+    ⛔ Wysokość wielkiej liczby liczymy TUSZEM (`textbbox`), nie metryką linii — ukośnik,
+    ogonki i cyfry z podcięciem schodzą poniżej nominalnej wysokości linii nawet o 20 px
+    (błąd z karty receh1VWhO4a3UqHA, ten sam, który naprawialiśmy w `render_z2.py`)."""
     base = _plansza_base(brand)
     _accent_bar(base, brand)
     if avatar is None:
@@ -1472,28 +1484,48 @@ def render_stat(brand, kicker, figure, label, body, idx, total, avatar=None):
     d = ImageDraw.Draw(base)
     white, accent, taupe = _ink_on_bg(brand), hex2rgb(brand.accent), _sec_on_bg(brand)
 
-    y = _kicker(base, brand, MARGIN, 360, kicker) if kicker else 360
-    # wielka liczba
+    ODSTEP_LABEL, ODSTEP_TRESC = 28, 52
+    h_kicker = 52 if kicker else 0
+
     ff, fl, _ = _fit_rich(d, figure, brand.font_heavy, 300, 150, 1)
-    _fy = y + 10
-    y = _draw_rich(base, MARGIN, _fy, fl, ff, accent, accent, int(ff.size * 1.0))
-    # ⛔⛔ 16.08 — DÓŁ WIELKIEJ LICZBY MIERZYMY TUSZEM, NIE METRYKĄ LINII.
-    # Bartek na karcie receh1VWhO4a3UqHA: „3/5 wchodzi na ten napis". _draw_rich zwraca
-    # y + line_h, czyli NOMINALNĄ wysokość linii (ff.size * 1.0). Ukośnik, ogonki (ą, ę)
-    # i cyfry z podcięciem schodzą PONIŻEJ tej wartości — przy 150 px nawet o 20 px.
-    # Label startował więc od pozycji, którą liczba już fizycznie zajmowała.
-    # To ten sam błąd, który naprawialiśmy w render_z2.py (s285): mierz textbbox,
-    # nie zakładaj, że glif mieści się w prostokącie linii.
     _fig_txt = " ".join(w for _ln in fl for w, _ in _ln)
+    h_fig = int(ff.size * 1.0)
     if _fig_txt:
-        y = max(y, d.textbbox((MARGIN, _fy), _fig_txt, font=ff)[3])
+        h_fig = max(h_fig, d.textbbox((MARGIN, 0), _fig_txt, font=ff)[3])
+
+    lf = ll = None
+    h_lab = 0
     if label:
         lf, ll, _ = _fit_rich(d, label, brand.font_heavy, 76, 48, 3)
-        y = _draw_rich(base, MARGIN, y + 28, ll, lf, white, accent, int(lf.size * 1.1))
+        h_lab = ODSTEP_LABEL + len(ll) * int(lf.size * 1.1)
+
+    bf = bl = None
+    h_body = 0
     if body:
         bf, bl, _ = _fit_rich(d, body, brand.font_med, 46, 34, 3)
-        by = min(max(y + 60, 980), H - 150 - int(bf.size * 1.34) * len(bl))
-        _draw_rich(base, MARGIN, by, [[(w, False) for w, _ in ln] for ln in bl],
+        h_body = ODSTEP_TRESC + len(bl) * int(bf.size * 1.34)
+
+    # ⭐ BLOK STAWIAMY TUŻ POD GÓRNYM PASKIEM, a wolne miejsce zostawiamy NA DOLE.
+    # Bartek: „żeby to było wszystko troszeczkę wyżej". Zwykłe wyśrodkowanie w kadrze daje
+    # tu prawie to samo co dotychczas (blok wypełnia niemal całe pole), więc to nie ono jest
+    # dźwignią — dźwignią jest oparcie bloku o GÓRĘ. Gdy blok jest wyjątkowo wysoki,
+    # cofamy się do wersji „mieści się w polu", żeby nigdy nie wjechał na pasek postępu.
+    calosc = h_kicker + h_fig + h_lab + h_body
+    gora, dol = 290, H - 150
+    START = 306
+    y = START if calosc <= dol - START else int(max(gora, dol - calosc))
+
+    if kicker:
+        y = _kicker(base, brand, MARGIN, y, kicker)
+    _fy = y
+    _draw_rich(base, MARGIN, _fy, fl, ff, accent, accent, int(ff.size * 1.0))
+    y = _fy + h_fig
+    if label:
+        y = _draw_rich(base, MARGIN, y + ODSTEP_LABEL, ll, lf, white, accent,
+                       int(lf.size * 1.1))
+    if body:
+        _draw_rich(base, MARGIN, y + ODSTEP_TRESC,
+                   [[(w, False) for w, _ in ln] for ln in bl],
                    bf, taupe, accent, int(bf.size * 1.34))
     _progress(base, brand, idx, total)
     return base.convert("RGB")
