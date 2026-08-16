@@ -275,6 +275,44 @@ def _parse_bar(line):
     return (label, max(0, min(100, val)), hi)
 
 
+_ZNAKI_MYSLNIKA = "—–―"      # — (em), – (en), ― (pozioma kreska)
+
+
+def bez_dlugich_myslnikow(t: str) -> str:
+    """⛔⛔ 16.08 (s289) — DŁUGI MYŚLNIK ZNIKA Z CAŁEGO KONTENTU.
+
+    Bartek: „to się chyba nazywa dasze… i to widać, że to AI robi. Proszę, żeby to
+    nigdzie nie było wykorzystywane w kontencie — w żadnej karuzeli, w żadnym stories,
+    tak samo w opisach".
+
+    ⭐ DLACZEGO W KODZIE, A NIE TYLKO W PROMPCIE: prompt kształtuje wynik, ale go nie
+    gwarantuje — model wraca do swoich nawyków interpunkcyjnych po kilku zdaniach.
+    Tu jest to wycięte mechanicznie, na wejściu, więc na planszę nie ma jak trafić.
+    Prompt i tak dostaje zakaz, ale to jest zabezpieczenie, nie prośba.
+
+    ⛔ NIE KASUJEMY ZNAKU NA ŚLEPO — puste miejsce po myślniku zostawiłoby zdanie bez
+    interpunkcji („szukasz a przy okazji zobaczysz"). Zamieniamy według roli:
+      • między liczbami (zakres „10 — 15") → zwykły dywiz: 10-15;
+      • na początku wiersza (wypunktowanie) → znika razem ze spacją;
+      • wtrącenie przed wielką literą → kropka i spacja (to było nowe zdanie);
+      • każde inne wtrącenie → przecinek i spacja.
+    """
+    if not t:
+        return t
+    s = str(t)
+    s = re.sub(r"(?<=\d)\s*[" + _ZNAKI_MYSLNIKA + r"]\s*(?=\d)", "-", s)
+    s = re.sub(r"(?m)^[ \t]*[" + _ZNAKI_MYSLNIKA + r"]+[ \t]*", "", s)
+    s = re.sub(r"\s*[" + _ZNAKI_MYSLNIKA + r"]+\s+(?=[A-ZĄĆĘŁŃÓŚŹŻ])", ". ", s)
+    s = re.sub(r"\s*[" + _ZNAKI_MYSLNIKA + r"]+\s+", ", ", s)
+    s = re.sub(r"\s*[" + _ZNAKI_MYSLNIKA + r"]+\s*", " ", s)
+    # sprzątanie po podmianie: podwójna interpunkcja i osierocone spacje
+    s = re.sub(r"([,.;:!?])\s*,", r"\1", s)
+    s = re.sub(r",\s*\.", ".", s)
+    s = re.sub(r"\s+([,.;:!?])", r"\1", s)
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    return s
+
+
 def parse_carousel_tokens(raw: str):
     """Surowy blok tokenów Claude -> (slides[dict], caption, temat).
 
@@ -286,6 +324,10 @@ def parse_carousel_tokens(raw: str):
     Slajdy treściowe numerowane automatycznie 1..N (jeśli brak NUMER),
     cover.count = LICZBA lub liczba slajdów-punktów.
     """
+    # ⭐ Myślniki wycinamy RAZ, na całym surowym bloku — zanim cokolwiek się rozjedzie
+    # na pola. Dzięki temu obejmuje to i plansze, i CAPTION pod post, i nie trzeba
+    # pamiętać o dokładaniu tego przy każdym nowym tokenie.
+    raw = bez_dlugich_myslnikow(raw or "")
     matches = list(_TOKEN_RE.finditer(raw or ""))
     fields = []
     for i, m in enumerate(matches):
@@ -708,6 +750,10 @@ async def render_story_endpoint(
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="bad api key")
     raw = (await request.body()).decode("utf-8", errors="replace")
+    # ⭐ 16.08 (s289) — TA SAMA REGUŁA, CO W KARUZELACH: żadnych długich myślników.
+    # Stories mają własny prompt w Make i własną drogę do renderu, więc gdyby zakaz stał
+    # tylko w prompcie, wracałby tu tylnymi drzwiami. Wycinamy na wejściu, raz.
+    raw = bez_dlugich_myslnikow(raw)
     parts = re.split(r"\[\[STORY\]\]", raw)
     items = []
     for p in parts:

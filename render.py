@@ -844,15 +844,21 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
             line_txts = [" ".join(w for w, _ in ln) for ln in sub_lines]
             tw = max(dmes.textlength(t, font=cf) for t in line_txts)
             cw = min(int(tw) + 2 * pad_x, W - 2 * MARGIN)
-            rad = min(chip_h // 2, 46)
-            # miękki cień pod chipem — lekko unosi go znad zdjęcia
+            # ⭐⭐ 16.08 (s289) — PLAKIETKA NA OKŁADCE MA OSTRE KRAWĘDZIE.
+            # Bartek: „żeby był ten zakreślacz prostokątny, a nie w takie owalne
+            # zakończenia… to może być to tło, tylko chodzi o to, żeby miało ostre
+            # krawędzie". Dotąd promień wynosił połowę wysokości plakietki (do 46 px),
+            # czyli owal. Teraz zero — dokładnie ten sam kształt, co podkład w formacie
+            # z2, więc oba formaty mówią tym samym językiem.
+            # ⛔ Zmieniamy WYŁĄCZNIE promień. Kolor, szerokość, wysokość, odstępy i cień
+            # zostają — to była uwaga o kształcie, nie o kompozycji.
             sh = Image.new("RGBA", base.size, (0, 0, 0, 0))
-            ImageDraw.Draw(sh).rounded_rectangle(
-                [MARGIN, cy, MARGIN + cw, cy + chip_h], radius=rad, fill=(0, 0, 0, 150))
+            ImageDraw.Draw(sh).rectangle(
+                [MARGIN, cy, MARGIN + cw, cy + chip_h], fill=(0, 0, 0, 150))
             base.alpha_composite(sh.filter(ImageFilter.GaussianBlur(12)))
             dc = ImageDraw.Draw(base)
-            dc.rounded_rectangle([MARGIN, cy, MARGIN + cw, cy + chip_h],
-                                 radius=rad, fill=hex2rgb(brand.accent))
+            dc.rectangle([MARGIN, cy, MARGIN + cw, cy + chip_h],
+                         fill=hex2rgb(brand.accent))
             ty = cy + 22 - int(cf.size * 0.06)
             for t in line_txts:
                 dc.text((MARGIN + pad_x, ty), t, font=cf, fill=hex2rgb(brand.white))
@@ -1100,6 +1106,47 @@ def render_porownanie(brand, kicker, heading, lewa, punkty_l, prawa, punkty_p, i
     ]
     pad = 30
     tekst_w = kol_w - 2 * pad - 52          # 52 px na znacznik
+
+    # ⛔⛔ 16.08 (s289) — TU BYŁO OBCINANIE NAGŁÓWKA KOLUMNY ZNAK PO ZNAKU.
+    # Bartek zobaczył na planszy 3/8 („Wzięli najtańszą ofertę na rynku") kolumny
+    # „CO WIDZISZ W RE" i „CO JEST W UMOW" — w oryginale „…W REKLAMIE" i „…W UMOWIE".
+    # Stary kod robił dosłownie `txt = txt[:-2]` w pętli, dopóki napis nie wszedł
+    # w szerokość kolumny. Ucięte słowo to nie jest kompromis — to jest błąd, który
+    # widać z drugiego końca pokoju, a przy okazji zmienia znaczenie.
+    # ⭐ Teraz: najpierw ZMNIEJSZAMY pismo (42→24), a jeżeli przy najmniejszym stopniu
+    # nagłówek dalej nie wchodzi w jedną linię — ŁAMIEMY GO NA DWIE. Nigdy nie ucinamy.
+    # ⛔ Stopień pisma i wysokość nagłówka są WSPÓLNE dla obu kolumn: policzone osobno
+    # dałyby dwie kolumny o różnej wielkości liter i rozjechane listy punktów.
+    naglowki = [str(t).upper() for _, t, _, _ in kolumny if t]
+    tf = _f(brand.font_bold, 24)
+    for stopien in (42, 39, 36, 33, 30, 27, 24):
+        prob = _f(brand.font_bold, stopien)
+        if all(d.textlength(t, font=prob) <= kol_w - 2 * pad for t in naglowki):
+            tf = prob
+            break
+    def _lam_naglowek(txt):
+        """Nagłówek kolumny w co najwyżej dwóch liniach. Łamiemy na spacji."""
+        if d.textlength(txt, font=tf) <= kol_w - 2 * pad:
+            return [txt]
+        slowa, linie, biez = txt.split(" "), [], ""
+        for w in slowa:
+            prob = (biez + " " + w).strip()
+            if d.textlength(prob, font=tf) > kol_w - 2 * pad and biez:
+                linie.append(biez)
+                biez = w
+            else:
+                biez = prob
+        if biez:
+            linie.append(biez)
+        return linie[:2]
+    nag_linie = {}
+    for _, tyt, _, _ in kolumny:
+        if tyt:
+            nag_linie[str(tyt)] = _lam_naglowek(str(tyt).upper())
+    nag_lh = int(tf.size * 1.16)
+    ile_lin = max([len(v) for v in nag_linie.values()] or [1])
+    naglowek_wys = 96 + (nag_lh if ile_lin > 1 else 0)
+
     # jeden wspólny stopień pisma dla OBU kolumn — inaczej wygląda to jak dwa różne slajdy
     rozmiar = 40
     for rozmiar in (40, 37, 34, 31, 28):
@@ -1107,7 +1154,7 @@ def render_porownanie(brand, kicker, heading, lewa, punkty_l, prawa, punkty_p, i
         lh = int(rozmiar * 1.24)
         naj = 0
         for _, tyt, punkty, _p in kolumny:
-            wys = 96 if tyt else 20
+            wys = naglowek_wys if tyt else 20
             for it in punkty:
                 lines = _wrap_rich(d, _parse_rich(str(it)), f, tekst_w)
                 wys += max(len(lines) * lh, 46) + 26
@@ -1116,13 +1163,12 @@ def render_porownanie(brand, kicker, heading, lewa, punkty_l, prawa, punkty_p, i
             break
     f = _f(brand.font_med, rozmiar)
     lh = int(rozmiar * 1.24)
-    tf = _f(brand.font_bold, min(42, rozmiar + 4))
 
     # ⭐ karta ma wysokość TREŚCI, a nie całego kadru — inaczej pod krótką listą zostaje
     # pół slajdu pustki i wygląda to jak błąd renderu, a nie jak decyzja.
     wysokosci = []
     for _, tyt, punkty, _d in kolumny:
-        wys = 96 if tyt else 20
+        wys = naglowek_wys if tyt else 20
         for it in punkty:
             wys += max(len(_wrap_rich(d, _parse_rich(str(it)), f, tekst_w)) * lh, 46) + 26
         wysokosci.append(wys - 26 + 2 * pad)
@@ -1137,11 +1183,11 @@ def render_porownanie(brand, kicker, heading, lewa, punkty_l, prawa, punkty_p, i
     for x0, tyt, punkty, dobra in kolumny:
         cy = top + pad
         if tyt:
-            txt = str(tyt).upper()
-            while d.textlength(txt, font=tf) > kol_w - 2 * pad and len(txt) > 4:
-                txt = txt[:-2]
-            d.text((x0 + pad, cy), txt, font=tf, fill=(accent if dobra else taupe))
-            cy += 96
+            ty = cy
+            for lin in nag_linie.get(str(tyt), [str(tyt).upper()]):
+                d.text((x0 + pad, ty), lin, font=tf, fill=(accent if dobra else taupe))
+                ty += nag_lh
+            cy += naglowek_wys
         for it in punkty:
             lines = _wrap_rich(d, _parse_rich(str(it)), f, tekst_w)
             if dobra:
