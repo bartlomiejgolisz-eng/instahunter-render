@@ -214,7 +214,7 @@ class Brand:
     glow: bool = False           # zostawione dla zgodności API; render jest CZYSTY (bez poświaty)
     ornaments: bool = True       # cienkie geometryczne kółka
     # --- POKRĘTŁA WYGLĄDU (s98) — domyślne = dotychczasowy wygląd (zero regresji) ---
-    accent_bar: bool = True         # pasek akcentu z lewej krawędzi
+    accent_bar: bool = False        # 16.08 (s290): pasek z lewej ZDJĘTY z karuzel (patrz _accent_bar)
     bar_w: int = BAR                # grubość paska akcentu
     vignette: bool = True           # przyciemnienie rogów (winieta)
     vignette_strength: float = 1.0  # mnożnik siły winiety
@@ -443,7 +443,16 @@ def _draw_rich(base, x, y, lines, font, white, accent, line_h, shadow=False, sha
 
 # ---------- ELEMENTY STAŁE ----------
 def _accent_bar(base, brand):
-    if not getattr(brand, "accent_bar", True):
+    """⛔⛔ 16.08 (s290) — PASEK AKCENTU Z LEWEJ KRAWĘDZI ZDJĘTY Z KARUZEL.
+    Bartek po obejrzeniu podglądu bez ozdobników: „jest super". Pasek nie niósł żadnej
+    informacji — był dekoracją, która na okładce fotograficznej cięła zdjęcie pionową
+    kreską, a na planszach treści konkurował z jedynym elementem w kolorze marki,
+    czyli z wyróżnionym słowem w nagłówku.
+    ⛔ Funkcja ZOSTAJE (wołana z jedenastu miejsc) i dalej respektuje `brand.accent_bar` —
+    kto będzie chciał pasek z powrotem, ustawia flagę i ma go bez ruszania kodu.
+    Zmienia się wyłącznie wartość domyślna: było „rysuj", jest „nie rysuj".
+    ⛔ Stories NIE wołają tej funkcji — tam nic się nie zmienia."""
+    if not getattr(brand, "accent_bar", False):
         return
     bw = getattr(brand, "bar_w", BAR)
     ImageDraw.Draw(base).rectangle([0, 0, bw, H], fill=hex2rgb(brand.accent))
@@ -538,25 +547,38 @@ def _kicker(base, brand, x, y, text):
 
 
 def _header(base, brand, idx, total, shadow=False):
-    hf = _f(brand.font_med, 30)
+    """⭐⭐ 16.08 (s290) — GÓRNY PASEK PRZEBUDOWANY. Było: handle po lewej, licznik po prawej.
+    Jest: SAM LICZNIK, w LEWYM GÓRNYM ROGU, a na okładce nie ma go wcale.
+
+    Decyzja Bartka po obejrzeniu podglądu: „niech będzie ten pasek dolny i liczba, np. 2 na 8,
+    niech się pojawi tylko w lewym górnym rogu… okładkę zostawiamy czystą, minimalistyczną".
+
+    ⭐ DLACZEGO LEWY RÓG, A NIE PRAWY: licznik po prawej wisiał po przekątnej od nagłówka
+    i czytał się jak element interfejsu. W tej samej kolumnie co cały tekst czyta się jak
+    etykieta planszy i nie konkuruje z nagłówkiem.
+    ⛔ HANDLE ZNIKA CAŁKIEM. Był na każdej planszy, a niósł to samo, co nazwa profilu
+    nad postem — czyli nic. Na ostatniej planszy zostaje „Obserwuj po więcej: <handle>",
+    i to wystarczy.
+    ⛔ OKŁADKA BEZ NICZEGO (`idx == 1`): ma być samo zdjęcie i napis.
+    ⛔ Stories NIE wołają tej funkcji — tam handle zostaje jak był."""
+    if idx == 1:
+        return
     pg = f"{idx:02d}/{total:02d}"
     pf = _f(brand.font_bold, 30)
-    px = W - MARGIN - ImageDraw.Draw(base).textlength(pg, font=pf)
-    if shadow:  # cień pod tekstem na okładce fotograficznej (czytelność na każdym tle)
+    if shadow:  # cień pod licznikiem na planszy fotograficznej (czytelność na każdym tle)
         sh = Image.new("RGBA", base.size, (0, 0, 0, 0))
-        sd = ImageDraw.Draw(sh)
-        sd.text((MARGIN + 1, 62), brand.handle, font=hf, fill=(0, 0, 0, 210))
-        sd.text((px + 1, 62), pg, font=pf, fill=(0, 0, 0, 210))
+        ImageDraw.Draw(sh).text((MARGIN + 1, 62), pg, font=pf, fill=(0, 0, 0, 210))
         base.alpha_composite(sh.filter(ImageFilter.GaussianBlur(4)))
     d = ImageDraw.Draw(base)
-    handle_col = hex2rgb(brand.white) if shadow else _sec_on_bg(brand)
-    d.text((MARGIN, 60), brand.handle, font=hf, fill=handle_col)
-    pg_col = hex2rgb(brand.white) if shadow else hex2rgb(brand.accent)
-    d.text((px, 60), pg, font=pf, fill=pg_col)
+    d.text((MARGIN, 60), pg,
+           font=pf, fill=(hex2rgb(brand.white) if shadow else hex2rgb(brand.accent)))
 
 
 def _progress(base, brand, idx, total):
-    if not getattr(brand, "progress", True):
+    """⛔ 16.08 (s290) — KRESKI ZOSTAJĄ NA PLANSZACH 2–8, ALE NIE NA OKŁADCE.
+    Okładka ma być czysta: samo zdjęcie i napis. Na planszach kreski niosą realną
+    informację („ile jeszcze zostało") i zostają."""
+    if not getattr(brand, "progress", True) or idx == 1:
         return
     d = ImageDraw.Draw(base)
     y = H - 66
@@ -675,6 +697,50 @@ def _bottom_scrim(base, brand, frac=0.62):
     solid = Image.new("RGBA", (W, H), COVER_SCRIM_RGB + (255,))
     solid.putalpha(grad)
     base.alpha_composite(solid)
+
+
+def _przygas_calosc(base, sila):
+    """Równomierne, delikatne przygaszenie CAŁEGO kadru — bez krawędzi, bez pasa."""
+    base.alpha_composite(Image.new("RGBA", (W, H), COVER_SCRIM_RGB + (int(255 * sila),)))
+
+
+def _gradient_od(base, od_dolu, frac, moc):
+    """Miękki gradient od jednej krawędzi. `moc` to maksymalne krycie przy krawędzi."""
+    g = Image.new("L", (1, H), 0)
+    for y in range(H):
+        t = ((y - H * (1 - frac)) / (H * frac)) if od_dolu else (1.0 - y / (H * frac))
+        g.putpixel((0, y), int(255 * moc * min(1.0, max(0.0, t) ** 1.6)))
+    s = Image.new("RGBA", (W, H), COVER_SCRIM_RGB + (255,))
+    s.putalpha(g.resize((W, H)))
+    base.alpha_composite(s)
+
+
+def _przyciemnienie_okladki(base, brand, gdzie):
+    """⭐⭐⭐ 16.08 (s290) — PRZYCIEMNIENIE OKŁADKI OD NOWA.
+
+    Bartek: „może ewentualnie delikatnie przyciemnić całe zdjęcie z delikatnie większym
+    przyciemnieniem od dołu lub od góry, w zależności od tego, gdzie jest napis".
+
+    ⛔ CO BYŁO ŹLE: dwa twarde pasy (72% kadru od dołu, 28% od góry) rysowane niezależnie
+    od tego, gdzie stanie napis. Pas ma widoczną krawędź — po niej od razu widać, że coś
+    nałożono na zdjęcie, a to jest dokładnie ten efekt, którego format ma nie mieć.
+
+    ⭐ TERAZ: całe zdjęcie przygaszone RÓWNO o 20% (jednolita warstwa, zero krawędzi),
+    a na to miękki gradient WYŁĄCZNIE od tej krawędzi, przy której leży tekst.
+    Druga strona zostaje praktycznie czysta.
+    ⛔ Wyjątek `na_twarzy`: napis nie ma dokąd uciec, więc gradient od dołu jest mocniejszy
+    i całość odrobinę ciemniejsza — czytelność wygrywa z urodą zdjęcia, ale to przypadek
+    ostateczny, nie domyślny."""
+    cs = getattr(brand, "cover_scrim", 1.0)
+    if gdzie == "na_twarzy":
+        _przygas_calosc(base, min(0.34, 0.26 * cs))
+        _gradient_od(base, True, 0.66, 0.90)
+    elif gdzie == "nad":
+        _przygas_calosc(base, min(0.28, 0.20 * cs))
+        _gradient_od(base, False, 0.62, 0.72)
+    else:
+        _przygas_calosc(base, min(0.28, 0.20 * cs))
+        _gradient_od(base, True, 0.62, 0.78)
 
 
 # ---------- KADR OKŁADKI WG TWARZY ----------
@@ -838,18 +904,7 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
                 else:
                     _gdzie = "na_twarzy"
 
-        _cs = getattr(brand, "cover_scrim", 1.0)
-        if _gdzie == "nad":
-            # tekst u góry: przyciemniamy górę, dół zostaje prawie czysty
-            _top_scrim(base, brand, frac=min(0.72, 0.52 * _cs))
-            _bottom_scrim(base, brand, frac=min(0.30, 0.24 * _cs))
-        elif _gdzie == "na_twarzy":
-            # nie ma dokąd uciec — pełne przyciemnienie dołu, żeby biały tekst był czytelny
-            _bottom_scrim(base, brand, frac=0.98)
-            _top_scrim(base, brand, frac=min(0.6, 0.28 * _cs))
-        else:
-            _bottom_scrim(base, brand, frac=min(0.95, 0.72 * _cs))
-            _top_scrim(base, brand, frac=min(0.6, 0.28 * _cs))   # czytelność górnego paska
+        _przyciemnienie_okladki(base, brand, _gdzie)
     else:
         _vignette(base, brand)
     _accent_bar(base, brand)
