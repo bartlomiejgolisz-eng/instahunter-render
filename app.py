@@ -974,10 +974,20 @@ def render_z2_endpoint(req: Z2Req, x_api_key: str = Header(default="")):
         "czcionkaNag": req.czcionka_naglowka,
         "czcionkaTxt": req.czcionka_tresci,
     }
+    # ⛔⛔ 16.08 (s291) — DŁUGI MYŚLNIK: TEN FORMAT BYŁ POMINIĘTY.
+    # Zakaz dasza wszedł 16.08 (s289) i objął dwie drogi: `parse_carousel_tokens`
+    # (format tokenowy) oraz `/render_story`. TRZECIA droga, czyli ten endpoint, dostaje
+    # gotowe pola z workera i NIGDY nie przechodziła przez `bez_dlugich_myslnikow`.
+    # Zobaczone na pierwszej karcie po wdrożeniu (recHofxp51YHUCqKs, plansza 2):
+    # „nie hasło z reklamy — to już rozmowa".
+    # ⭐ REGUŁA, KTÓRA Z TEGO ZOSTAJE: reguła treści obowiązuje na WEJŚCIU KAŻDEGO
+    # renderera, nie „w miejscu, gdzie akurat parsowaliśmy tekst". Nowy endpoint = nowe
+    # wejście = trzeba je objąć osobno.
+    _bm = bez_dlugich_myslnikow
     tresc = {
-        "zawod": req.zawod,
-        "linie": [list(l)[:2] for l in req.linie[:5]],
-        "cta": list(req.cta)[:2],
+        "zawod": _bm(req.zawod),
+        "linie": [[_bm(x) for x in list(l)[:2]] for l in req.linie[:5]],
+        "cta": [_bm(x) for x in list(req.cta)[:2]],
     }
     zdjecia = {
         "ludzie": [{"u": z.u, "r": z.r} for z in req.zdjecia.ludzie],
