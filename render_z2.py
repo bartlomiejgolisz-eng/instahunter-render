@@ -133,6 +133,11 @@ MARGINES_GORNY_MIN = 64.0
 # co najmniej 40% plansz z człowiekiem.
 CHCE_CZLOWIEKA = [1, 0, 1, 0, 1, 0, 1]
 
+# ⭐ 15.08 (s287) — stały nagłówek okładki nowego formatu. Po nim, na zakreślaczu,
+# stoi nazwa zawodu — prosta i rodzajowa („trener personalny", nie „trener personalny
+# przygotowujący do wypraw górskich"). Pilnuje tego bramka i krytyk.
+NAGLOWEK_OKLADKI = "Najczęstsze pytania, które dostaję jako"
+
 TEKST_JASNY = (248, 248, 248)
 
 # ⭐⭐⭐ 15.08 (s283) — NAPIS NA ZAKREŚLACZU JEST ZAWSZE BIAŁY. DECYZJA BARTKA.
@@ -468,18 +473,29 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
                 bloki.append({"x1": L, "y1": ink_y1, "x2": x2, "y2": ink_y2})
                 return {"x2": x2, "yEnd": y_end, "S1": S1}
 
-            T = tresc["linie"][i] if i < 6 else None
-            if T:
-                # ⭐⭐ 15.08 — SŁOWO „TO" STOI WYŁĄCZNIE NA OKŁADCE.
-                # Ustalenie z 14.08 („plansze 2–6 to całe zdanie klienta, bez «to»")
-                # było zapisane w promptcie formatu w Airtable, ale ten plik dalej
-                # dostawiał „to" na każdej planszy. Stąd zdania w rodzaju
-                # „to «moja księgowa to ogarnie»".
-                N = nag((tresc["temat"] + " to") if i == 0 else "", T[0], y_base)
+            # ⭐⭐⭐ 15.08 (s287) — NOWA TREŚĆ FORMATU: „NAJCZĘSTSZE PYTANIA, KTÓRE DOSTAJĘ JAKO…".
+            # Decyzja Bartka: warstwa WIZUALNA tego formatu zostaje w całości („to mapowanie
+            # jest fajnie zrobione… nie nachodzi na twarz, nie jest za blisko krawędzi"),
+            # a treść wymieniamy na inną. Stary sens („<TEMAT> to «zarzut» — dopóki…")
+            # przestaje istnieć: nie ma tematu, nie ma zarzutu, nie ma dolnej linii „dopóki".
+            #
+            # UKŁAD PLANSZ:
+            #   1        okładka  — biały nagłówek + ZAWÓD na zakreślaczu, BEZ linii pod spodem
+            #   2–6      pytanie  — PYTANIE w cudzysłowie na zakreślaczu + ODPOWIEDŹ pod spodem
+            #   7        CTA      — bez zmian
+            # ⛔ Pytań jest PIĘĆ, nie sześć: okładka oddała swoje miejsce nagłówkowi.
+            if i == 0:
+                N = nag(NAGLOWEK_OKLADKI, tresc.get("zawod", ""), y_base)
+                linie_t = []          # ⛔ okładka nie ma dolnej linii. Bartek: „to możemy usunąć"
+            elif i <= 5:
+                T = tresc["linie"][i - 1]
+                N = nag("", T[0], y_base)          # pytanie klienta, w cudzysłowie
+                linie_t = lam(f_txt, T[1], maxW)   # odpowiedź
             else:
                 N = nag("", tresc["cta"][0], y_base, cudzyslow=False)
+                linie_t = lam(f_txt, tresc["cta"][1], maxW)
 
-            linie_t = lam(f_txt, T[1] if T else tresc["cta"][1], maxW)
+            T = None if i == 0 or i == 6 else tresc["linie"][i - 1]
             if T and tryb == "daleko":
                 yd = round(H * 0.70)
             else:
@@ -493,16 +509,19 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
             for t in linie_t:
                 bx = max(bx, L + _szer(f_txt, t))
             # ⭐ 15.08 (s285) — treść też mierzona atramentem, nie wzorem.
-            t_y1, t_y2 = 10 ** 9, -10 ** 9
-            for k, t in enumerate(linie_t):
-                bb = rys.textbbox((L, yd + k * S2 * 1.24), t, font=f_txt, anchor="ls")
-                t_y1 = min(t_y1, bb[1])
-                t_y2 = max(t_y2, bb[3])
-            if t_y1 > t_y2:
-                t_y1 = yd - S2 * 0.85
-                t_y2 = yd + (len(linie_t) - 1) * S2 * 1.24 + S2 * 0.3
-            dol_t = t_y2
-            bloki.append({"x1": L, "y1": t_y1, "x2": bx + 8, "y2": t_y2})
+            # ⭐ 15.08 (s287) — OKŁADKA NIE MA JUŻ TREŚCI POD NAGŁÓWKIEM. Gdy `linie_t`
+            # jest puste, NIE dokładamy drugiego prostokąta (pusty blok psułby i pomiar
+            # zakrycia twarzy, i wyśrodkowanie) — dolną krawędzią całości jest sam nagłówek.
+            if linie_t:
+                t_y1, t_y2 = 10 ** 9, -10 ** 9
+                for k, t in enumerate(linie_t):
+                    bb = rys.textbbox((L, yd + k * S2 * 1.24), t, font=f_txt, anchor="ls")
+                    t_y1 = min(t_y1, bb[1])
+                    t_y2 = max(t_y2, bb[3])
+                dol_t = t_y2
+                bloki.append({"x1": L, "y1": t_y1, "x2": bx + 8, "y2": t_y2})
+            else:
+                dol_t = bloki[-1]["y2"]
 
             return {"plotno": plotno, "bloki": bloki, "N": N, "bx": bx,
                     "dol_t": dol_t, "gorna_t": min(b["y1"] for b in bloki)}
