@@ -65,9 +65,17 @@ W, H = 1080, 1350
 # zgęstniał o jedną piątą, a nie kilkukrotnie.
 # ⛔ Po każdej zmianie tych trzech liczb MIERZYĆ przez `zmierz_cien` — i porównywać
 # ZAWSZE na tym samym zdjęciu ze stanem sprzed zmiany, nie z progiem 2% na sucho.
+# ⭐⭐ 16.08 wieczorem — CIEŃ W DÓŁ, BO ZMIENIŁO SIĘ TŁO. Bartek: „nie trzeba robić takiego
+# intensywnego cienia pod samymi literami, może być troszeczkę mniejszy, bo teraz jest
+# za duży". I to jest spójne, a nie sprzeczne z decyzją sprzed godziny: cień podbiłem po to,
+# żeby biały napis dawał radę na JASNYM zdjęciu. Skoro zdjęcie jest teraz przygaszone o 27%,
+# tło samo w sobie robi tę robotę, a cień z tej samej wartości staje się widoczną plamą
+# pod literami. Krycie 0,55 → 0,42, przebiegi 5 → 3.
+# ⛔ PROMIEŃ ZOSTAJE 0,20 — to nie jest kwestia siły, tylko kształtu: cień szerszy od liter
+# czyta się jako brud na tle, a nie jako ich obrys. Ta zmiana była dobra i zostaje.
 CIEN_PROMIEN = 0.20
-CIEN_KRYCIE = 0.55
-CIEN_PRZEBIEGI = 5
+CIEN_KRYCIE = 0.42
+CIEN_PRZEBIEGI = 3
 
 # ⭐⭐⭐ 16.08 (s290) — PRZYGASZENIE CAŁEGO KADRU NA PLANSZACH 2–7.
 # Bartek: „drugi slajd ja bym tutaj odrobinkę przyciemnił… żeby to było lepiej czytelne".
@@ -79,7 +87,13 @@ CIEN_PRZEBIEGI = 5
 # i bez przygaszenia jest tam najlepsza z całej karuzeli.
 # ⛔ 0,22 było za dużo: przy tej wartości bramka jasności (< 0,11) odrzucała zdjęcia,
 # które wcześniej przechodziły. 0,14 to wartość zaakceptowana na podglądzie.
-PRZYGASZENIE = 0.14
+# ⭐ 16.08 wieczorem — 0,14 → 0,27. Bartek po zobaczeniu pierwszej karty na słonecznych
+# zdjęciach: „ono jest takie bardzo jasne… prosiłem, żeby te dalsze były przyciemniane".
+# 0,14 nie było wyborem estetycznym, tylko obejściem: przy 0,22 bramka jasności zaczynała
+# odrzucać kadry, bo mierzy GOTOWĄ planszę i sama się nabierała na przygaszenie. Odkąd
+# progi jadą przez `_wsp_przygaszenia`, tego ograniczenia nie ma i wartość może być taka,
+# jaka ma być dla oka. Wybrana z podglądu trzech wariantów (14 / 22 / 30).
+PRZYGASZENIE = 0.27
 PRZYGAS_KOLOR = (14, 13, 11)     # nie czysta czerń — zostawia ciepło zdjęcia
 
 # Nieregularny układ napisów — każda plansza ma inne miejsce. „daleko" znaczy,
@@ -111,16 +125,29 @@ def drabinka_auto(i: int):
     wolnego miejsca. Twarz siedzi w górnej połowie kadru, więc pierwsza wolna
     pozycja wypadała ok. 62% i napis lądował przyklejony do dołu.
 
-    ⛔ TYLKO OKŁADKA. Plansze 2–7 zostają na nieregularnym układzie (POZ) — to jest
-    świadomy zamysł („każda plansza ma inne miejsce"), a uwaga Bartka dotyczyła
-    pierwszego slajdu. Gdyby liczyć wszystkie, siedem plansz stanęłoby w tym samym
-    miejscu i format straciłby rytm.
+    ⭐⭐⭐ 16.08 wieczorem — LICZENIE ŚRODKA WCHODZI NA WSZYSTKIE PLANSZE ZE ZDJĘCIEM
+    CZŁOWIEKA. Bartek: „bym starał się dawać tam, żeby nie nachodziło na twarz…
+    po prostu od twarzy do dalszej krawędzi, tak mniej więcej w połowie".
+    ⛔ CO BYŁO ŹLE (a nie było widać, bo formalnie działało): reguła „napis nie dotyka
+    twarzy" jest spełniona już przy 28 px od brody. Generator brał PIERWSZĄ wysokość
+    z tabeli, która tego progu nie łamała — więc napis potrafił stanąć tuż pod twarzą
+    albo tuż przy krawędzi kadru. Technicznie legalnie, wizualnie ciasno. Brakowało
+    nie zakazu, tylko MIARY: ile tego wolnego pola w ogóle jest i gdzie jest jego środek.
+
+    ⛔ ZDJĘCIA BEZ TWARZY ZOSTAJĄ NA TABELI POZ — i to jest świadomy kompromis, nie
+    niedoróbka. Nie ma tam twarzy, od której liczyć, więc „środek wolnego pola" znaczyłby
+    „środek kadru" i wszystkie takie plansze stanęłyby w jednym miejscu. Tabela daje
+    formatowi rytm („każda plansza ma inne miejsce") i przeżywa dokładnie tam, gdzie
+    liczenie nic nie wnosi.
 
     Za pozycją „auto" stoi stara drabinka jako awaryjna — gdyby wyliczone miejsce
     nie przeszło (za wysoki blok, twarz nietypowo nisko).
     """
     if i != 0:
-        return drabinka_domyslna(i)
+        # ⛔ Lewy margines zostaje Z TABELI, zmienia się tylko wysokość. Rytm poziomy
+        # (każda plansza inaczej odsunięta od lewej) jest drugą nogą tego układu i nie ma
+        # powodu go ruszać — twarz ogranicza pion, nie poziom.
+        return [(POZ[i][0], POZ[i][1], "auto")] + drabinka_domyslna(i)
     # ⭐ 15.08, druga uwaga Bartka: „jest troszeczkę przesunięte do prawej… zwykle się
     # jednak pisze bardziej od lewej". Okładka miała w POZ lewy margines 20,6% szerokości
     # (ok. 222 px) — wpisany ręcznie 16.08 i NIGDY nieliczony. Wcześniej tego nie było
@@ -636,7 +663,14 @@ def rysuj(i: int, im: Image.Image, tw: Optional[List[float]],
         # Jak nie mieści się w żadnym nawet przy ciaśniejszych marginesach, ta pozycja
         # PRZEPADA (`zaDuze`) i drabinka próbuje dalej: inny kadr, inna pozycja, inne zdjęcie.
         # ⛔ Nigdy więcej dosuwania do krawędzi — lepiej inne zdjęcie niż zła kompozycja.
-        if tryb == "auto":
+        # ⛔ 16.08 wieczorem — WARUNEK `tw or i == 0`, nie samo `tryb == "auto"`.
+        # Plansze 2–7 dostają dziś „auto" jako pierwszą próbę, ale liczenie środka ma sens
+        # WYŁĄCZNIE względem twarzy. Bez ramki twarzy „środek wolnego pola" to po prostu
+        # środek kadru — wszystkie plansze bez człowieka stanęłyby w jednym miejscu.
+        # Takie plansze spadają niżej, do gałęzi z tabelą POZ, i zachowują rytm formatu.
+        # ⛔ Okładka (i == 0) liczy się ZAWSZE, także bez twarzy — tak działa od 15.08
+        # i Bartek to zaakceptował; nie ruszam tego przy okazji innej zmiany.
+        if tryb == "auto" and (tw or i == 0):
             wys = r0["dol_t"] - r0["gorna_t"]
             ty1f = (oy + tw[1] / 100.0 * rh) if tw else 0.0
             ty2f = (oy + (tw[1] + tw[3]) / 100.0 * rh) if tw else 0.0
