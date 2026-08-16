@@ -429,8 +429,18 @@ def parse_carousel_tokens(raw: str):
                 # ⭐ WYBACZAJĄCY PARSER: model bywa, że na slajdzie statystyki wpisze [[LICZBA]]
                 # i [[PODPIS]] zamiast [[FIGURA]] i [[ETYKIETA]] (zmierzone 14.08). Zamiast
                 # renderować pustą wielką liczbę — przyjmujemy oba warianty nazw.
+                # ⛔⛔ 16.08 (s289) — DOSZEDŁ `PODTYTUL`. Karta „Klient płacił za limit"
+                # (16.08 13:37) przyszła ze znacznikami [[LICZBA]] + [[PODTYTUL]]. Liczbę
+                # parser złapał, ale ETYKIETY pod nią nie — bo `PODTYTUL` nie był na liście.
+                # Na planszy została wielka liczba i dziura tam, gdzie miało stać zdanie
+                # wyjaśniające, co ta liczba znaczy. Dwie inne karty tej samej serii użyły
+                # poprawnych znaczników, więc to pojedyncza pomyłka modelu, nie reguła.
+                # ⭐ Naprawa idzie po stronie parsera, nie promptu: prompt zawsze będzie się
+                # czasem mylił, parser nie musi. Tu nie ma ryzyka kolizji — `PODTYTUL` jest
+                # czytany jako podtytuł WYŁĄCZNIE na okładce, w zupełnie innej gałęzi.
                 "figure": s.get("FIGURA", "") or s.get("LICZBA", "") or s.get("FIGURE", ""),
-                "label": s.get("ETYKIETA", "") or s.get("PODPIS", "") or s.get("NAGLOWEK", ""),
+                "label": (s.get("ETYKIETA", "") or s.get("PODPIS", "")
+                          or s.get("PODTYTUL", "") or s.get("NAGLOWEK", "")),
                 "body": s.get("TRESC", ""),
             })
         elif typ == "chart":

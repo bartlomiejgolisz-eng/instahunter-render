@@ -807,9 +807,49 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
             ph = ph.filter(ImageFilter.GaussianBlur(_pb))
         base.paste(ph, (0, 0))
         base = base.convert("RGBA")
+
+        # ⭐⭐⭐ 16.08 (s289) — NAJPIERW USTALAMY, GDZIE STANIE NAPIS, DOPIERO POTEM
+        # PRZYCIEMNIAMY. Do dziś było odwrotnie: kod przyciemniał DÓŁ (72% kadru), bo
+        # napis „zwykle stoi u dołu", potem odkrywał, że napis musi iść NAD twarz,
+        # i dokładał drugie przyciemnienie od GÓRY (66%). W efekcie zdjęcie było
+        # przygaszone z obu stron naraz, a ciemny pas na dole nie zasłaniał niczego,
+        # bo tekstu tam nie było.
+        # Bartek (16.08): „czemu to jest aż tak bardzo wyciemnione od góry i od dołu?
+        # Tym bardziej, że skoro napis jest na górze, to może od dołu nie ma co tak
+        # bardzo tego wyciemniać".
+        # ⭐ Reguła: przyciemniamy TĘ STRONĘ, na której naprawdę leży tekst. Druga strona
+        # dostaje tylko tyle, ile trzeba, żeby pasek z handlem i pasek postępu nie zgasły.
+        _block_h = _m["block_h"]
+        _y_txt = max(120, H - 158 - _block_h - int(title_shift or 0))
+        _gdzie = "dol"
+        if _tw is not None and not _kadr_ok:
+            _f1, _f2 = _tw
+            if _y_txt < _f2 and (_y_txt + _block_h) > _f1:
+                _pod = _f2 + 34
+                # ⭐ 16.08 — WIĘKSZY ODDECH NAD TWARZĄ. Bartek: „napis wchodzi praktycznie
+                # na czapkę… troszeczkę bym go przesunął do góry". Odstęp od górnej krawędzi
+                # ramki twarzy rośnie z 34 na 78 px, a dolna granica pola schodzi ze 170
+                # na 148 — dzięki temu blok ma dokąd się cofnąć, zamiast siadać na włosach.
+                _nad = _f1 - 78 - _block_h
+                if _pod + _block_h <= H - 150:
+                    _y_txt, _gdzie = int(_pod), "pod"
+                elif _nad >= 148:
+                    _y_txt, _gdzie = int(_nad), "nad"
+                else:
+                    _gdzie = "na_twarzy"
+
         _cs = getattr(brand, "cover_scrim", 1.0)
-        _bottom_scrim(base, brand, frac=min(0.95, 0.72 * _cs))
-        _top_scrim(base, brand, frac=min(0.6, 0.28 * _cs))   # czytelność górnego paska
+        if _gdzie == "nad":
+            # tekst u góry: przyciemniamy górę, dół zostaje prawie czysty
+            _top_scrim(base, brand, frac=min(0.72, 0.52 * _cs))
+            _bottom_scrim(base, brand, frac=min(0.30, 0.24 * _cs))
+        elif _gdzie == "na_twarzy":
+            # nie ma dokąd uciec — pełne przyciemnienie dołu, żeby biały tekst był czytelny
+            _bottom_scrim(base, brand, frac=0.98)
+            _top_scrim(base, brand, frac=min(0.6, 0.28 * _cs))
+        else:
+            _bottom_scrim(base, brand, frac=min(0.95, 0.72 * _cs))
+            _top_scrim(base, brand, frac=min(0.6, 0.28 * _cs))   # czytelność górnego paska
     else:
         _vignette(base, brand)
     _accent_bar(base, brand)
@@ -827,29 +867,15 @@ def render_cover(brand, title, subtitle, tagline, idx, total, count=None, photo=
         tf, tl, lh = _m["tf"], _m["tl"], _m["lh"]
         cf, sub_lines, chip_lh, chip_h = _m["cf"], _m["sub_lines"], _m["chip_lh"], _m["chip_h"]
         block_h = _m["block_h"]
-        y = max(120, H - 158 - block_h - int(title_shift or 0))
-        # ⭐⭐ NAPIS SCHODZI Z TWARZY. Domyślnie blok stoi u dołu kadru — dokładnie tam,
-        # gdzie na wielu zdjęciach z telefonu jest twarz. Jeżeli ramka twarzy mówi, że
-        # tak jest, próbujemy najpierw POD twarzą, a jak nie ma miejsca — NAD nią,
-        # dokładając wtedy przyciemnienie od góry, żeby biały tekst został czytelny.
-        if _tw is not None and not _kadr_ok:
-            f1, f2 = _tw
-            if y < f2 and (y + block_h) > f1:
-                pod = f2 + 34
-                nad = f1 - 34 - block_h
-                if pod + block_h <= H - 150:
-                    y = int(pod)
-                elif nad >= 170:
-                    y = int(nad)
-                    _top_scrim(base, brand, frac=0.66)
-                    # przyciemnienie poszło NA narysowany już pasek górny — rysujemy go
-                    # jeszcze raz, żeby handle i licznik nie zgasły
-                    _header(base, brand, idx, total, shadow=on_photo)
-                else:
-                    # ⛔ TU KOD DOTĄD MILCZAŁ i zostawiał napis na twarzy. Skoro nie da się
-                    # ani zejść pod twarz, ani wejść nad nią — przynajmniej dokładamy pełne
-                    # przyciemnienie, żeby biały tekst był czytelny, a nie „szary na policzku".
-                    _bottom_scrim(base, brand, frac=0.98)
+        # ⭐⭐ NAPIS SCHODZI Z TWARZY. Pozycja jest już POLICZONA wyżej, przed nałożeniem
+        # przyciemnień (`_y_txt`, `_gdzie`) — właśnie po to, żeby ciemny pas szedł na tę
+        # stronę kadru, na której naprawdę leży tekst. Tutaj tylko z niej korzystamy.
+        # ⛔ Nie licz tego drugi raz. Dwa liczenia tej samej rzeczy w jednej funkcji już raz
+        # się rozjechały (napis rysowany gdzie indziej, niż padał scrim).
+        # ⭐ Znikło stąd powtórne rysowanie paska z handlem. Było potrzebne, dopóki
+        # przyciemnienie od góry nakładało się PO nim; teraz wszystkie scrimy idą przed
+        # `_header`, więc pasek i tak leży na wierzchu.
+        y = _y_txt
         y = _draw_rich(base, MARGIN, y, tl, tf, white, white, lh, shadow=True, shadow_strength=_ss)
         if subtitle and cf is not None:
             cy = y + 34
