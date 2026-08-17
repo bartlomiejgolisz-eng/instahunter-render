@@ -2262,12 +2262,278 @@ def _story_progress(base, brand, idx, total, y=54):
         d.rounded_rectangle([x0, y, x1, y + h], radius=h // 2, fill=col)
 
 
+# ==========================================================================================
+# ⭐⭐⭐ 17.08.2026 — FORMAT 1 STORIES PRZEBUDOWANY (uwagi Bartka z sesji „Stories")
+#
+# Co było źle (na produkcji, u Małgorzaty Bakuły — „Trzy limity, które warto znać"):
+#  1. Blok tekstu stał ZA WYSOKO, a tekst pomocniczy bywał NIECZYTELNIE MAŁY, bo stopień
+#     pisma malał wraz z ilością tekstu („im więcej napisów, tym mniejsze" — błędny mechanizm).
+#  2. CTA rysowane jako zaokrąglona pigułka URYWAŁO SIĘ przy dłuższym wezwaniu.
+#  3. Napisy wchodziły na twarz.
+#  4. Słowa kluczowe były tylko pokolorowane akcentem — brakowało GESTU ZAZNACZENIA,
+#     który mamy w karuzeli „Zdania, które najczęściej powtarzam swoim podopiecznym".
+#
+# Co jest teraz:
+#  • Blok ZAKOTWICZONY DOŁEM (dolna krawędź bloku na 93% wysokości kadru) — tekst pomocniczy
+#    kończy się tuż nad dolną krawędzią, nagłówek siedzi wyraźnie niżej niż dotąd.
+#  • STAŁY stopień pisma tekstu pomocniczego. Więcej tekstu = WIĘCEJ MIEJSCA, nie mniejsza
+#    czcionka. Skracanie stopnia to ostateczność, gdy blok nie mieści się w kadrze.
+#  • CTA nie jest już pigułką — to zaznaczenie, więc ZAWIJA SIĘ i nie ma prawa się uciąć.
+#  • Twarz: napis może zająć NAJWYŻEJ ~12% wysokości twarzy (wcześniej: albo cała, albo nic).
+#  • ZAZNACZENIE (ten sam gest co w karuzeli): kursywa + półprzezroczyste tło w kolorze marki
+#    (.55), PROSTOKĄTNE (bez zaokrągleń), uchwyty zaznaczenia (kreska + kropka: u góry na
+#    początku, u dołu na końcu — jak w iOS), delikatny cień pod tekstem.
+#    Na PIERWSZEJ planszy serii nagłówek kończy się WIELOKROPKIEM I KURSOREM TEKSTOWYM.
+#    Zaznaczenia mogą wystąpić na każdej planszy: w nagłówku, w treści i w CTA.
+# ==========================================================================================
+
+# Pochylenie kursywy syntetycznej. ⛔ ŚWIADOMA DECYZJA: nie pobieramy osobnego pliku
+# kursywy, tylko pochylamy krój klienta. Powód: kroje plakatowe (Anton, Archivo Black),
+# których używa część klientów, KURSYWY NIE MAJĄ — a gest zaznaczenia ma działać u każdego.
+# Dzięki temu render nie zależy też od tego, czy Google Fonts akurat odpowie.
+POCHYLENIE = 0.21
+
+
+def _szer_kursywy(d, tekst, font):
+    """Szerokość tekstu pisanego kursywą syntetyczną (pochylenie dokłada trochę z prawej)."""
+    return d.textlength(tekst, font=font) + POCHYLENIE * font.size * 0.62
+
+
+def _pisz_kursywa(base, x, y, tekst, font, kolor):
+    """Rysuje tekst POCHYLONY (kursywa syntetyczna) w punkcie (x, y) — jak d.text()."""
+    d = ImageDraw.Draw(base)
+    szer = int(d.textlength(tekst, font=font)) + int(font.size * 1.6)
+    wys = int(font.size * 2.0)
+    gora = int(font.size * 0.35)
+    warstwa = Image.new("RGBA", (max(1, szer), max(1, wys)), (0, 0, 0, 0))
+    ImageDraw.Draw(warstwa).text((0, gora), tekst, font=font, fill=kolor)
+    # linia bazowa (mniej więcej wysokość wersalika) — wokół niej pochylamy
+    baza = gora + font.size * 0.98
+    pochylona = warstwa.transform(
+        warstwa.size, Image.AFFINE,
+        (1, POCHYLENIE, -POCHYLENIE * baza, 0, 1, 0),
+        resample=Image.BICUBIC)
+    base.alpha_composite(pochylona, (int(x), int(y - gora)))
+
+
+def _uchwyt_zaznaczenia(d, x, y, h, kolor, gora=True):
+    """Uchwyt zaznaczenia: pionowa kreska na pełną wysokość wiersza + kropka —
+    U GÓRY na początku zaznaczenia, U DOŁU na końcu (dokładnie tak jak w iOS)."""
+    gr = max(3, int(round(h * 0.048)))
+    r = max(5, int(round(h * 0.105)))
+    d.rectangle([x - gr / 2.0, y, x + gr / 2.0, y + h], fill=kolor)
+    cy = y if gora else y + h
+    d.ellipse([x - r, cy - r, x + r, cy + r], fill=kolor)
+
+
+def _kursor_tekstowy(d, x, y, h, kolor):
+    """Kursor tekstowy (belka „I"): pionowa kreska z poprzeczkami u góry i u dołu.
+
+    ⛔ Runda 5 (Bartek, 17.08 12:10): „ta kreska jest zdecydowanie za duża… wchodzi na Y.
+    Powinna być maksymalnie wysokości linii." Kursor dostawał całą wysokość ZAZNACZENIA
+    (1,12 em), czyli więcej niż samo pismo — i sięgał pod linię bazową, na ogonki liter.
+    ⭐ Teraz jest liczony od wysokości pisma, nie od wysokości zaznaczenia, i wisi na środku
+    wiersza. Wywołanie skraca go do 0,74 wysokości zaznaczenia i opuszcza o 0,19."""
+    gr = max(3, int(round(h * 0.07)))
+    ramie = max(5, int(round(h * 0.20)))
+    d.rectangle([x, y, x + gr, y + h], fill=kolor)
+    d.rectangle([x - ramie, y, x + gr + ramie, y + gr], fill=kolor)
+    d.rectangle([x - ramie, y + h - gr, x + gr + ramie, y + h], fill=kolor)
+
+
+def _serie_zaznaczen(pozycje):
+    """Z listy (x, szer, słowo, czy_akcent) robi listę CIĄGŁYCH serii zaznaczonych słów:
+    [(x_start, x_koniec, [słowa])]. Jedna seria = jedno zaznaczenie z dwoma uchwytami."""
+    serie, biez = [], None
+    for x, szer, w, acc in pozycje:
+        if acc:
+            if biez is None:
+                biez = [x, x + szer, [w]]
+            else:
+                biez[1] = x + szer
+                biez[2].append(w)
+        else:
+            if biez is not None:
+                serie.append(tuple(biez))
+                biez = None
+    if biez is not None:
+        serie.append(tuple(biez))
+    return serie
+
+
+def _rysuj_zaznaczony(base, x, y, linie, font, kolor_tekstu, accent, wys_wiersza,
+                      cien=1.0, kursor=False):
+    """Wielowierszowy tekst, w którym *fragmenty* są ZAZNACZONE — gest z karuzeli
+    „Zdania, które najczęściej powtarzam": prostokątne, półprzezroczyste tło w kolorze
+    marki (.55), kursywa, uchwyty na początku i końcu każdej serii.
+    kursor=True dokłada na końcu ostatniego wiersza KURSOR TEKSTOWY (tylko 1. plansza).
+    Zwraca y pod ostatnim wierszem."""
+    d = ImageDraw.Draw(base, "RGBA")
+    spacja = d.textlength(" ", font=font)
+    fs = font.size
+    h_zazn = int(fs * 1.12)          # wysokość zaznaczenia = 1,12 em (jak w karuzeli)
+    gora_zazn = -int(fs * 0.06)      # zaznaczenie zaczyna się odrobinę nad linią pisma
+    pad = max(8, int(fs * 0.10))
+
+    # 1) POZYCJE WSZYSTKICH SŁÓW (kursywa jest odrobinę szersza)
+    plan = []
+    for linia in linie:
+        poz, xx = [], x
+        for w, acc in linia:
+            szer = _szer_kursywy(d, w, font) if acc else d.textlength(w, font=font)
+            # ⭐ Runda 2 (Bartek): „te trzy kropki i ta kreska niech mają troszeczkę więcej
+            #    oddechu, bo teraz wszystko jest bardzo zebrane w całość".
+            if kursor and w == "…":
+                xx += int(fs * 0.34)
+            poz.append((xx, szer, w, acc))
+            xx += szer + spacja
+        plan.append(poz)
+
+    # 2) DELIKATNY CIEŃ POD CAŁYM TEKSTEM — żeby napis czytał się na każdym zdjęciu
+    if cien and cien > 0:
+        alfa = max(0, min(255, int(165 * cien)))
+        warstwa = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        sd = ImageDraw.Draw(warstwa)
+        yy = y
+        for poz in plan:
+            for xx, szer, w, acc in poz:
+                sd.text((xx + 2, yy + 3), w, font=font, fill=(0, 0, 0, alfa))
+            yy += wys_wiersza
+        base.alpha_composite(warstwa.filter(ImageFilter.GaussianBlur(6)))
+
+    # 3) TŁO ZAZNACZENIA + UCHWYTY + TEKST
+    # ⛔⛔⛔ RUNDA 4 — PRAWDZIWA PRZYCZYNA „ZAZNACZENIE NIE JEST PRZEZROCZYSTE".
+    #    Bartek zgłaszał to TRZY RAZY, a ja trzy razy zmieniałem samą liczbę: .55 → .45 → .33.
+    #    Liczba nie miała żadnego znaczenia, bo ALFA BYŁA IGNOROWANA:
+    #    `ImageDraw.Draw(obraz, "RGBA")` w tej wersji Pillow **NIE MIESZA** koloru z tłem —
+    #    wpisuje go w pełnym kryciu, cokolwiek podasz w czwartym kanale.
+    #    Zmierzone na gotowej planszy: wnętrze zaznaczenia = (201,168,76), czyli czyste
+    #    #C9A84C, piksel w piksel. Zero przezroczystości.
+    #    ⭐ JEDYNA DROGA, KTÓRA MIESZA: rysunek na OSOBNEJ warstwie RGBA + `alpha_composite`.
+    #    ⛔⛔ LEKCJA DROŻSZA NIŻ SAM BŁĄD: „sprawdzam po danych" znaczy zmierzyć TAM, GDZIE
+    #    JEST ZMIANA. Oglądałem wycinek i widziałem zdjęcie OBOK prostokąta, biorąc je za
+    #    zdjęcie PRZEZ prostokąt. Odczyt jednego piksela ze ŚRODKA zaznaczenia zajmuje
+    #    sekundę i od razu pokazuje (201,168,76).
+    #    ⚠ Ta sama pułapka siedzi w kilku innych miejscach tego pliku — patrz DO-ZROBIENIA.
+    zaczyna = [bool(ln and ln[0][1]) for ln in linie]
+    konczy = [bool(ln and ln[-1][1]) for ln in linie]
+
+    # 3a) WARSTWA ZAZNACZEŃ — najpierw wszystkie prostokąty i uchwyty, potem JEDNO wmieszanie
+    warstwa_zazn = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    dz = ImageDraw.Draw(warstwa_zazn)
+    yy = y
+    for i_l, poz in enumerate(plan):
+        serie = _serie_zaznaczen(poz)
+        for k, (x0, x1, slowa) in enumerate(serie):
+            # ⛔ PROSTOKĄT, bez zaokrągleń — tak wygląda zaznaczenie tekstu, nie pigułka.
+            # ⭐ Krycie .33 to WŁASNA wartość stories: pod spodem jest scrim, więc karuzelowe
+            #   .55 czytałoby się tu jako plama. Nie zrównywać obu formatów „dla spójności".
+            dz.rectangle([x0 - pad, yy + gora_zazn, x1 + pad, yy + gora_zazn + h_zazn],
+                         fill=accent + (85,))
+            # ⛔⛔ ZAZNACZENIE ZAWIJAJĄCE SIĘ DO NASTĘPNEGO WIERSZA TO JEDNO ZAZNACZENIE:
+            #    uchwyt stoi na POCZĄTKU całej frazy i na jej KOŃCU, nigdy w środku.
+            ciag_z_gory = (k == 0 and i_l > 0 and konczy[i_l - 1] and zaczyna[i_l])
+            ciag_w_dol = (k == len(serie) - 1 and i_l < len(plan) - 1
+                          and konczy[i_l] and zaczyna[i_l + 1])
+            # ⭐ Bartek wprost: „tych kresek z kółkami nie robimy przezroczystymi, tylko sam
+            #   środek". Uchwyty mają alfę 255 i na tej samej warstwie NADPISUJĄ prostokąt,
+            #   więc po wmieszaniu zostają twarde.
+            if not ciag_z_gory:
+                _uchwyt_zaznaczenia(dz, x0 - pad, yy + gora_zazn, h_zazn, accent + (255,), gora=True)
+            if not ciag_w_dol:
+                _uchwyt_zaznaczenia(dz, x1 + pad, yy + gora_zazn, h_zazn, accent + (255,), gora=False)
+        yy += wys_wiersza
+    base.alpha_composite(warstwa_zazn)      # ⭐ TU następuje faktyczne mieszanie z fotografią
+
+    # 3b) TEKST — już na wmieszanym tle
+    d = ImageDraw.Draw(base, "RGBA")
+    yy = y
+    koniec_x, koniec_y = x, y
+    for poz in plan:
+        for xx, szer, w, acc in poz:
+            if acc:
+                _pisz_kursywa(base, xx, yy, w, font, kolor_tekstu)
+            else:
+                ImageDraw.Draw(base).text((xx, yy), w, font=font, fill=kolor_tekstu)
+            koniec_x, koniec_y = xx + szer, yy
+        d = ImageDraw.Draw(base, "RGBA")
+        yy += wys_wiersza
+
+    # 4) KURSOR TEKSTOWY — wyłącznie na pierwszej planszy serii, na końcu nagłówka
+    if kursor:
+        # ⭐ Runda 2 (Bartek): kursor tekstowy ma być BIAŁY, nie w kolorze marki,
+        #    i ma stać dalej od wielokropka.
+        _kursor_tekstowy(d, koniec_x + int(fs * 0.55),
+                         koniec_y + gora_zazn + int(h_zazn * 0.19),
+                         int(h_zazn * 0.74), (255, 255, 255, 255))
+    return yy
+
+
+# Słowa, których NIE zaznaczamy, gdy trzeba wybrać fragment samodzielnie.
+_NIEWAZNE = {
+    "a", "i", "o", "u", "w", "z", "na", "do", "od", "po", "za", "to", "że", "ale", "czy",
+    "jak", "już", "nie", "tak", "ten", "ta", "te", "tym", "tej", "co", "gdy", "bo", "się",
+    "jest", "są", "być", "ma", "mam", "masz", "albo", "lub", "oraz", "przez", "dla", "bez",
+    "też", "tylko", "jeszcze", "który", "która", "które", "swoje", "swoją", "twoja", "twojej",
+}
+
+
+def _dobierz_zaznaczenie(tekst, ile=3):
+    """Gdy nagłówek pierwszej planszy NIE MA żadnego *fragmentu*, a zaznaczenie ma tam być
+    ZAWSZE — wybieramy 2–3 kolejne, znaczące słowa. Deterministycznie (bez losowania):
+    najdłuższe okno sąsiadujących słów spoza listy nieważnych, z przewagą dla początku zdania.
+    ⛔ To bezpiecznik renderu. Docelowo fragment wskazuje generator w treści (*gwiazdki*)."""
+    if "*" in (tekst or ""):
+        return tekst
+    slowa = str(tekst or "").split()
+    if len(slowa) < 3:
+        return tekst
+    najlepsze, wynik_naj = None, -1.0
+    for dl in (ile, 2):
+        for i in range(len(slowa) - dl + 1):
+            okno = slowa[i:i + dl]
+            rdzenie = [w.strip(",.;:!?…\"'()").lower() for w in okno]
+            if any(r in _NIEWAZNE or len(r) < 3 for r in rdzenie):
+                continue
+            wynik = sum(len(r) for r in rdzenie) - 1.4 * i
+            if wynik > wynik_naj:
+                najlepsze, wynik_naj = (i, dl), wynik
+        if najlepsze:
+            break
+    if not najlepsze:
+        return tekst
+    i, dl = najlepsze
+    return " ".join(slowa[:i] + ["*" + " ".join(slowa[i:i + dl]) + "*"] + slowa[i + dl:])
+
+
+def _jedno_zaznaczenie(tekst):
+    """⛔ Runda 2 (Bartek): „nie chciałbym, żeby to zaznaczenie było kilkukrotnie w slajdzie —
+    zawsze zaznaczamy tylko jedną frazę, kilka słów obok siebie, jedna fraza jako całość."
+    Zostawiamy PIERWSZĄ parę gwiazdek, resztę zdejmujemy. Gdy nie ma żadnej — dobieramy sami."""
+    t = str(tekst or "")
+    if t.count("*") < 2:
+        return _dobierz_zaznaczenie(t)
+    a = t.index("*")
+    b = t.index("*", a + 1)
+    return t[:b + 1] + t[b + 1:].replace("*", "")
+
+
+def _bez_zaznaczen(tekst):
+    """⛔ Runda 2 (Bartek): „zawsze zaznaczamy w nagłówku, nigdy nie zaznaczamy w tej treści,
+    która jest na dole". Gwiazdki z tekstu pomocniczego po prostu znikają."""
+    return str(tekst or "").replace("*", "")
+
+
 def render_story(brand, photo, text, out_dir, idx=1, zone="bottom", total=4,
                  kicker=None, cta=None, twarz=None):
-    """FORMAT 1 (jedno zdjęcie przez całą serię, spójny szablon): pasek postępu u góry
-    (element stories) + statement (duży, bold, *akcent*) w DOLNEJ CZĘŚCI (nie na samym
-    dole) + opcjonalna linia dopowiedzenia + opcjonalny CTA-pill. BEZ handla i kickera
-    (to nie karuzela). Tekst z \\n: 1. linia = statement, reszta = dopowiedzenie."""
+    """FORMAT 1 (jedno zdjęcie przez całą serię, spójny szablon).
+
+    Układ: nagłówek (duży, krój NAGŁÓWKOWY klienta) + tekst pomocniczy (krój TEKSTOWY
+    klienta, STAŁY stopień pisma) + opcjonalne CTA — wszystko ZAKOTWICZONE DOŁEM kadru.
+    *Fragmenty* w gwiazdkach dostają GEST ZAZNACZENIA (kursywa + prostokątne, półprzezroczyste
+    tło marki + uchwyty). Na pierwszej planszy serii nagłówek ma zaznaczenie ZAWSZE
+    i kończy się wielokropkiem z kursorem tekstowym.
+    Tekst z \\n: 1. linia = nagłówek, reszta = tekst pomocniczy, ostatnia w *…* = CTA."""
     base = Image.new("RGBA", (SW, SH), hex2rgb(brand.bg) + (255,))
     if photo is not None:
         _spc = _warm_grade(_story_crop(photo, centering=_kadr_wg_twarzy(twarz)))
@@ -2277,102 +2543,133 @@ def render_story(brand, photo, text, out_dir, idx=1, zone="bottom", total=4,
         base.paste(_spc, (0, 0))
         base = base.convert("RGBA")
         _ss2 = getattr(brand, "story_scrim", 1.0)
-        _story_scrim(base, brand, frac=0.62, strength=min(1.0, 1.0 * _ss2))
-        _story_scrim_top(base, brand, frac=0.18, strength=min(1.0, 0.6 * _ss2))
+        # ⭐ Blok stoi teraz NIŻEJ, więc przyciemnienie od dołu jest odrobinę mocniejsze
+        #    i sięga wyżej — a górne prawie znika, bo na górze i tak nic nie piszemy.
+        _story_scrim(base, brand, frac=0.70, strength=min(1.0, 1.0 * _ss2))
+        _story_scrim_top(base, brand, frac=0.14, strength=min(1.0, 0.45 * _ss2))
     d = ImageDraw.Draw(base)
     white, accent = hex2rgb(brand.white), hex2rgb(brand.accent)
     margin = 88
     max_w = SW - 2 * margin
 
-    # _story_progress(base, brand, idx, total)  # USUNIĘTY s85 — bez paska postępu na górze
-
     raw = [l.strip() for l in str(text or "").split("\n") if l.strip()]
-    # Ostatnia linia w gwiazdkach (*...*) = koralowy GUZIK CTA (jak w referencji Formatu 2).
+    # Ostatnia linia w gwiazdkach (*...*) = CTA.
     if cta is None and len(raw) > 1 and raw[-1].startswith("*") and raw[-1].endswith("*") \
             and len(raw[-1]) > 2:
         cta = raw[-1].strip("*").strip()
         raw = raw[:-1]
-    statement = raw[0] if raw else ""
-    # ⛔⛔ BRAKUJĄCE KROPKI. Bartek, 14.08: „koniec zdania: tylko produkt pod jeden konkretny
-    # cel. I dalej: bierzesz dokładnie tyle. Gdzie jest kropka między «cel» a «bierzesz»?"
-    # Generator daje każde zdanie w osobnym wierszu, a render sklejał je gołą spacją —
-    # wychodziło „…która czeka nietknięta Po spłacie limit odnawia się sam". To nie jest
-    # sprawa modelu, tylko sklejania: wiersz, który nie kończy się znakiem przestankowym,
-    # dostaje kropkę, zanim doklei się następny.
-    body = _sklej_zdania(raw[1:])
+    # ⭐⭐ RUNDA 2 — GDZIE WOLNO ZAZNACZAĆ:
+    #  • nagłówek: ZAWSZE dokładnie JEDNA fraza (na każdej planszy),
+    #  • tekst pomocniczy: NIGDY,
+    #  • CTA: wolno — i wtedy jest odrobinę większe (patrz CTA_STOPIEN).
+    naglowek = _jedno_zaznaczenie(raw[0] if raw else "")
+    tresc = _bez_zaznaczen(_sklej_zdania(raw[1:]))
 
-    # ⛔⛔ BIAŁE NAPISY BYŁY ZA MAŁE — I TO NIE BYŁ PRZYPADEK, TYLKO REGUŁA.
-    # Bartek, 14.08: „te napisy są bardzo małe… im więcej jest tych napisów, tym one będą
-    # mniejsze. To jest błędny mechanizm." Dokładnie tak to działało: tekst pomocniczy miał
-    # sztywny sufit TRZECH WIERSZY, więc każde dłuższe zdanie zjeżdżało do 36 px, żeby się
-    # w nich zmieścić. Zamiast tego pozwalamy tekstowi zająć więcej wierszy i trzymamy
-    # czytelny stopień pisma: 44 px zamiast 36 na dole skali, 54 zamiast 48 na górze.
-    # Kadr ma 1920 px wysokości — miejsca jest pod dostatkiem, brakowało tylko zgody.
-    sf, sl, _ = _fit_rich(d, statement, brand.font_bold, 94, 62, 5, max_w=max_w)
-    slh = int(sf.size * 1.13)
-    s_h = slh * max(1, len(sl))
-    bf = bl = None
-    b_h = 0
-    if body:
-        bf, bl, _ = _fit_rich(d, body, brand.font_body, 54, 44, 6, max_w=max_w)
-        b_h = int(bf.size * 1.34) * len(bl)
-    cta_font = _f(brand.font_bold, 42)
-    # ⭐ Pigułka zawija się teraz w wiele wierszy, więc jej wysokość trzeba policzyć,
-    #    a nie zgadnąć — inaczej blok wychodzi poza dolną krawędź.
-    cta_h = 0
-    cta_linie = []
-    if cta:
-        cta_linie = _wrap_plain(d, cta, cta_font, max_w - 2 * 44)
-        cta_h = int(cta_font.size * 1.22) * max(1, len(cta_linie)) + 48 - int(cta_font.size * 0.22)
+    # ⭐ PIERWSZA PLANSZA SERII: wielokropek i kursor tekstowy na końcu nagłówka.
+    pierwsza = (int(idx) == 1)
+    if pierwsza and not naglowek.rstrip().endswith("…"):
+        naglowek = naglowek.rstrip().rstrip(".") + " …"
 
-    gap_body, gap_cta = 24, 40
-    total_h = s_h + (gap_body + b_h if body else 0) + (gap_cta + cta_h if cta else 0)
+    _sc = _ts()
+    def _skala(v):
+        return max(8, int(round(v * (_sc or 1.0))))
 
-    # dolna część kadru, ale uniesione znad samego dołu
-    y = int(SH * 0.86) - total_h
-    # ⛔ Sufit 0,44 wysokości powodował, że dłuższy blok po prostu wychodził poza dół kadru.
-    #    Blok ma prawo wjechać wyżej — dopiero wtedy zaczyna brakować miejsca naprawdę.
-    y = max(int(SH * 0.26), y)
+    # ⛔⛔ STAŁY STOPIEŃ PISMA. Bartek: „powinna być mniej więcej stała czcionka, a jeżeli
+    # jest więcej tekstu, to powinien zajmować więcej miejsca". Dlatego NIE ma tu już
+    # dopasowywania rozmiaru do liczby wierszy — jest jeden stopień i swobodne zawijanie.
+    # Zejście niżej następuje WYŁĄCZNIE wtedy, gdy cały blok nie mieści się w kadrze.
+    NAG_STOPNIE = [_skala(v) for v in (88, 82, 76, 70, 64)]
+    TR_STOPNIE = [_skala(v) for v in (52, 50, 48, 46)]
+    # ⭐ Runda 2 (Bartek): zaznaczenie w CTA jest dozwolone, „ale musi to być
+    #    i tak troszeczkę wtedy powiększone".
+    CTA_STOPIEN = _skala(56)
 
-    # ⭐⭐⭐ NAPIS SCHODZI Z TWARZY. Bartek, 14.08: „mapowanie twarzy się nie sprawdziło,
-    #     ponieważ nachodzi bardzo mocno na napis. Na twarz nie powinno tak być."
-    #     Ta sama reguła co w formacie „to «X» — dopóki…": rusza się NAPIS, nie zdjęcie.
+    DOL = int(SH * 0.93)          # dolna krawędź całego bloku (≈134 px od dołu kadru)
+    GORA_MIN = int(SH * 0.22)     # wyżej blok nie ma prawa wjechać
+    gap_tresc, gap_cta = 30, 44
+
+    # ⛔ Zawijamy z zapasem: kursywa i uchwyty zaznaczenia zajmują odrobinę więcej
+    #    miejsca niż zwykły tekst, a nic nie ma prawa wyjść poza margines.
+    zapas = 44
+
+    def _zloz(nag_s, tr_s):
+        nf = _f(brand.font_bold, nag_s)
+        nl = _wrap_rich(d, _parse_rich(naglowek), nf,
+                        max_w=max_w - zapas - (int(nag_s * 1.1) if pierwsza else 0))
+        n_lh = int(nf.size * 1.14)
+        n_h = n_lh * max(1, len(nl))
+        tf = tl = None
+        t_lh = t_h = 0
+        if tresc:
+            tf = _f(brand.font_body, tr_s)
+            tl = _wrap_rich(d, _parse_rich(tresc), tf, max_w=max_w - zapas)
+            t_lh = int(tf.size * 1.36)
+            t_h = t_lh * len(tl)
+        cf = cl = None
+        c_lh = c_h = 0
+        if cta:
+            cf = _f(brand.font_bold, CTA_STOPIEN)
+            cl = _wrap_rich(d, _parse_rich("*" + str(cta).strip("*").strip() + "*"), cf,
+                            max_w=max_w - zapas)
+            c_lh = int(cf.size * 1.30)
+            c_h = c_lh * len(cl)
+        razem = n_h + (gap_tresc + t_h if tresc else 0) + (gap_cta + c_h if cta else 0)
+        return dict(nf=nf, nl=nl, n_lh=n_lh, n_h=n_h, tf=tf, tl=tl, t_lh=t_lh, t_h=t_h,
+                    cf=cf, cl=cl, c_lh=c_lh, c_h=c_h, razem=razem)
+
+    plan = _zloz(NAG_STOPNIE[0], TR_STOPNIE[0])
+    i_n = i_t = 0
+    while plan["razem"] > DOL - GORA_MIN and (i_n < len(NAG_STOPNIE) - 1 or i_t < len(TR_STOPNIE) - 1):
+        if i_n < len(NAG_STOPNIE) - 1:
+            i_n += 1
+        elif i_t < len(TR_STOPNIE) - 1:
+            i_t += 1
+        plan = _zloz(NAG_STOPNIE[i_n], TR_STOPNIE[i_t])
+
+    razem = plan["razem"]
+    y = DOL - razem                      # ⭐ blok zakotwiczony DOŁEM kadru
+    y = max(GORA_MIN, y)
+
+    # ⭐⭐ TWARZ. Bartek: „napisy nie powinny wchodzić na twarz — najwyżej 10-15%".
+    # Wcześniej blok skakał pod twarz albo nad nią w całości. Teraz liczymy DOZWOLONE
+    # ZACHODZENIE (12% wysokości twarzy) i schodzimy dokładnie o tyle, ile trzeba.
     _tw = _twarz_na_kadrze(photo, twarz, centering=_kadr_wg_twarzy(twarz)) if photo is not None else None
     if _tw:
         f1, f2 = _tw
-        luz = 34
-        def _koliduje(yy):
-            return not (yy + total_h <= f1 - luz or yy >= f2 + luz)
-        if _koliduje(y):
-            pod = int(f2 + luz)                       # najpierw: pod twarzą
-            nad = int(f1 - luz - total_h)             # potem: nad twarzą
-            if pod + total_h <= int(SH * 0.94):
-                y = pod
-            elif nad >= int(SH * 0.06):
-                y = nad
-            # gdy ani pod, ani nad się nie mieści — zostaje jak było; lepszy napis
-            # na skraju twarzy niż napis ucięty poza kadrem.
+        wolno = 0.12 * max(1.0, f2 - f1)
+        gorna_granica = f2 - wolno          # wyżej niż to = napis wchodzi na twarz za mocno
+        DOL_KRANCOWY = int(SH * 0.945)
+        if y < gorna_granica:
+            y = min(gorna_granica, DOL_KRANCOWY - razem)
+            # dalej koliduje: skracamy stopień pisma, aż zmieści się pod twarzą
+            while y < gorna_granica and (i_n < len(NAG_STOPNIE) - 1 or i_t < len(TR_STOPNIE) - 1):
+                if i_n < len(NAG_STOPNIE) - 1:
+                    i_n += 1
+                else:
+                    i_t += 1
+                plan = _zloz(NAG_STOPNIE[i_n], TR_STOPNIE[i_t])
+                razem = plan["razem"]
+                y = min(gorna_granica, DOL_KRANCOWY - razem)
+            y = max(GORA_MIN, y)
+
     x = margin
     _sst = getattr(brand, "shadow_strength", 1.0)
-    # FIX (ciemny akcent marki niewidoczny na zdjęciu ze scrimem): jeśli kolor akcentu
-    # jest ciemny, słowa akcentowane dostają podświetlenie (pigułka akcent + biały tekst).
-    _hl = _luma(accent) < 80
-    _draw_rich(base, x, y, sl, sf, white, accent, slh, shadow=True, shadow_strength=_sst,
-               hl_accent=_hl)
-    y += s_h
-    if body:
-        y += gap_body
-        _draw_rich(base, x, y, bl, bf, white, accent, int(bf.size * 1.34), shadow=True,
-                   shadow_strength=_sst, hl_accent=_hl)
-        y += b_h
+    y = _rysuj_zaznaczony(base, x, y, plan["nl"], plan["nf"], white, accent, plan["n_lh"],
+                          cien=_sst, kursor=pierwsza)
+    if tresc:
+        y += gap_tresc
+        y = _rysuj_zaznaczony(base, x, y, plan["tl"], plan["tf"], white, accent,
+                              plan["t_lh"], cien=_sst)
     if cta:
         y += gap_cta
-        _draw_pill(base, x, y, cta, cta_font, accent, (255, 255, 255), max_w=max_w)
+        _rysuj_zaznaczony(base, x, y, plan["cl"], plan["cf"], white, accent, plan["c_lh"],
+                          cien=_sst)
 
     os.makedirs(out_dir, exist_ok=True)
     fp = os.path.join(out_dir, f"story_{idx:02d}.png")
     base.convert("RGB").save(fp, "PNG")
     return fp
+
 
 
 def _wrap_plain(d, text, font, max_w):
