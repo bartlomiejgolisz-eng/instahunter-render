@@ -31,9 +31,23 @@ os.makedirs(STATIC_DIR, exist_ok=True)
 # ⛔⛔ WERSJA USŁUGI RENDERU. Podbij ją przy KAŻDYM wdrożeniu i sprawdź po deployu
 # na `/health` — inaczej nie da się odróżnić „plik na dysku" od „to, co naprawdę stoi".
 # Do 22.08 usługa nie miała żadnego znacznika i każda sesja zgadywała stan produkcji.
-WERSJA = "r002-2026-08-22-uchwyty"
+WERSJA = "r003-2026-08-22-cors"
 
 app = FastAPI(title="InstaHunter Carousel Renderer", version="1.0")
+# ⭐⭐ 22.08.2026 — CORS na wyjściu renderu.
+# PO CO: panel (instahunter-panel.pages.dev) musi móc POBRAĆ gotową planszę i wgrać ją
+# do „Podglądu" operatora (trasa `szkic/wgraj` przyjmuje base64, więc przeglądarka musi
+# odczytać bajty). Bez tego nagłówka `fetch` z panelu na ten serwis pada na CORS,
+# a `<img>` + canvas jest „tainted" i też nie da się odczytać.
+# ⛔ Wpuszczamy TYLKO panel i tylko GET — to jest odczyt gotowych plansz, nic więcej.
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://instahunter-panel.pages.dev"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
