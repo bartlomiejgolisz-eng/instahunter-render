@@ -28,6 +28,11 @@ API_KEY = os.environ.get("RENDER_API_KEY", "dev-key")
 STATIC_DIR = os.environ.get("STATIC_DIR", os.path.join(os.path.dirname(__file__), "static"))
 os.makedirs(STATIC_DIR, exist_ok=True)
 
+# ⛔⛔ WERSJA USŁUGI RENDERU. Podbij ją przy KAŻDYM wdrożeniu i sprawdź po deployu
+# na `/health` — inaczej nie da się odróżnić „plik na dysku" od „to, co naprawdę stoi".
+# Do 22.08 usługa nie miała żadnego znacznika i każda sesja zgadywała stan produkcji.
+WERSJA = "r001-2026-08-22-png"
+
 app = FastAPI(title="InstaHunter Carousel Renderer", version="1.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -184,7 +189,7 @@ def _vision_eval(img_bytes: bytes, media_type: str) -> Optional[dict]:
 
 @app.get("/health")
 def health():
-    return {"ok": True, "ts": int(time.time())}
+    return {"ok": True, "wersja": WERSJA, "ts": int(time.time())}
 
 
 @app.post("/render")
@@ -1021,8 +1026,18 @@ def render_z2_endpoint(req: Z2Req, x_api_key: str = Header(default="")):
     os.makedirs(out_dir, exist_ok=True)
     urls = []
     for n, img in enumerate(wyn["plansze"], 1):
-        nazwa = "z2-%d.jpg" % n
-        img.save(os.path.join(out_dir, nazwa), "JPEG", quality=92)
+        # ⛔⛔ 22.08 — DLACZEGO PNG, A NIE JPEG. Ten endpoint zapisywał JPEG q=92,
+        # czyli z domyślnym w Pillow podpróbkowaniem chromy 4:2:0: kolor jest liczony
+        # dla bloków 2x2 pikseli. Na zdjęciu tego nie widać, na KOLOROWYM NAPISIE owszem —
+        # krawędzie liter rozmyte, brudna obwódka wokół akcentu. Zmierzone na plikach
+        # z Airtable: /render_tokens (PNG) wygląda dobrze, /render_z2 gorzej, mimo że
+        # pliki z2 były WIĘKSZE. Instagram i tak przekompresowuje wsad, więc artefakty
+        # z naszego kroku kumulują się z jego własnymi.
+        # ⭐ ZASADA: plansze wychodzą z usługi BEZSTRATNIE i w JEDNYM formacie — PNG.
+        # Tak od zawsze zapisuje render.py (karuzele i stories), więc oba wyjścia
+        # są teraz identyczne, a rozszerzenie zgadza się z zawartością pliku.
+        nazwa = "z2-%d.png" % n
+        img.save(os.path.join(out_dir, nazwa), "PNG")
         urls.append("%s/static/%s/%s" % (BASE_URL, job, nazwa))
 
     return JSONResponse({
