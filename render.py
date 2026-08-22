@@ -2322,7 +2322,13 @@ def _uchwyt_zaznaczenia(d, x, y, h, kolor, gora=True):
     gr = max(3, int(round(h * 0.048)))
     r = max(5, int(round(h * 0.105)))
     d.rectangle([x - gr / 2.0, y, x + gr / 2.0, y + h], fill=kolor)
-    cy = y if gora else y + h
+    # ⛔⛔ 22.08.2026 — BYŁO `cy = y if gora else y + h`, czyli ŚRODEK kulki dokładnie na
+    #    krawędzi pasa: połowa kulki zatopiona w zaznaczeniu (11 px przy pasie 107 px).
+    #    Bartek zgłaszał to wielokrotnie: „one powinny leżeć idealnie na początku i końcu
+    #    zaznaczenia, ale są nietrafione". Zaznaczenie ZOSTAJE PROSTOKĄTEM — nie pochylamy go.
+    # ⭐ Teraz jak w iOS: kulka wisi CAŁA POZA zaznaczeniem — nad górną krawędzią na początku
+    #    frazy i pod dolną na końcu. Pionowa kreska stoi na krawędzi tak jak stała (zmierzone).
+    cy = y - r if gora else y + h + r
     d.ellipse([x - r, cy - r, x + r, cy + r], fill=kolor)
 
 

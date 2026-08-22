@@ -31,7 +31,7 @@ os.makedirs(STATIC_DIR, exist_ok=True)
 # ⛔⛔ WERSJA USŁUGI RENDERU. Podbij ją przy KAŻDYM wdrożeniu i sprawdź po deployu
 # na `/health` — inaczej nie da się odróżnić „plik na dysku" od „to, co naprawdę stoi".
 # Do 22.08 usługa nie miała żadnego znacznika i każda sesja zgadywała stan produkcji.
-WERSJA = "r001-2026-08-22-png"
+WERSJA = "r002-2026-08-22-uchwyty"
 
 app = FastAPI(title="InstaHunter Carousel Renderer", version="1.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
